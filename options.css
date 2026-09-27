@@ -1,0 +1,30 @@
+:root { font: 16px/1.55 system-ui, sans-serif; color: #202738; background: #f6f8fc; }
+body { margin: 0; }
+main { width: min(620px, calc(100% - 40px)); margin: 48px auto; padding: 28px; background: #fff; border: 1px solid #e0e5ef; border-radius: 14px; box-sizing: border-box; }
+h1 { margin: 0 0 10px; font-size: 27px; }
+h1 small { color: #65728a; font-size: 13px; font-weight: 500; }
+.entry-notice { padding: 15px 17px; border: 1px solid #9cb5ec; border-radius: 10px; background: #eef4ff; }
+.entry-notice strong { color: #1e3c86; }
+.entry-notice p { margin: 7px 0 0; }
+.entry-notice a { color: #2348bb; }
+h2 { font-size: 18px; margin-top: 30px; }
+p { margin: 9px 0 15px; }
+label { display: block; font-weight: 600; margin-bottom: 7px; }
+input[type=password], input[type=url], input[list] { width: 100%; box-sizing: border-box; border: 1px solid #aeb9cc; border-radius: 7px; padding: 11px; font: inherit; }
+.provider-choice { display: flex; gap: 22px; border: 0; padding: 0; margin: 18px 0 22px; }
+.provider-choice legend { font-weight: 600; margin-bottom: 8px; }
+.provider-choice label { font-weight: 400; }
+#ollama-settings[hidden], #deepseek-settings[hidden] { display: none; }
+.model-row { display: flex; gap: 9px; }
+.model-row button { white-space: nowrap; background: #e9edf7; color: #2744a3; }
+.check { margin-top: 18px; font-weight: 400; }
+.check input { margin-right: 6px; }
+.hint { color: #536079; font-size: 14px; }
+.actions { display: flex; gap: 10px; margin-top: 16px; }
+button { border: 0; border-radius: 7px; padding: 10px 17px; color: white; background: #3156d5; cursor: pointer; font: inherit; }
+button + button { background: #e9edf7; color: #2744a3; }
+button:disabled { opacity: .55; cursor: wait; }
+#status { min-height: 1.5em; color: #3156d5; }
+section { border-top: 1px solid #e2e7f0; }
+footer { margin-top: 24px; padding-top: 14px; border-top: 1px solid #e2e7f0; color: #536079; font-size: 14px; }
+footer a { color: #2348bb; }

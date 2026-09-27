@@ -1,0 +1,96 @@
+export interface Controls {
+  setActive(active: boolean): void;
+  setStatus(text: string): void;
+  setRetry(visible: boolean): void;
+  setRetryLabel(label: string): void;
+  setPaused(paused: boolean): void;
+  notify(message: string, durationMs?: number): void;
+}
+
+export function createControls(onToggle: () => void, onRetry: () => void, onSettings: () => void, onPause: () => void): Controls {
+  const root = document.createElement('div');
+  root.id = 'mt-controls';
+  const ball = document.createElement('button');
+  ball.className = 'mt-ball';
+  ball.type = 'button';
+  ball.textContent = '译';
+  ball.title = '开始翻译';
+  ball.setAttribute('aria-label', '开始翻译');
+  const panel = document.createElement('div');
+  panel.className = 'mt-panel';
+  const status = document.createElement('span');
+  status.textContent = '点击悬浮球翻译当前页';
+  status.setAttribute('role', 'status');
+  const retry = document.createElement('button');
+  retry.type = 'button';
+  retry.textContent = '重试';
+  retry.hidden = true;
+  retry.addEventListener('click', onRetry);
+  const pause = document.createElement('button');
+  pause.type = 'button';
+  pause.textContent = '暂停';
+  pause.hidden = true;
+  pause.addEventListener('click', onPause);
+  const settings = document.createElement('button');
+  settings.type = 'button';
+  settings.textContent = '设置';
+  settings.addEventListener('click', onSettings);
+  panel.append(status, retry, pause, settings);
+  root.append(ball, panel);
+  document.documentElement.append(root);
+  let statusText = status.textContent ?? '';
+  let noticeTimer: number | undefined;
+  let startX = 0;
+  let startY = 0;
+  let originX = 0;
+  let originY = 0;
+  let moved = false;
+  ball.addEventListener('pointerdown', event => {
+    if (event.button !== 0) return;
+    startX = event.clientX;
+    startY = event.clientY;
+    originX = root.getBoundingClientRect().left;
+    originY = root.getBoundingClientRect().top;
+    moved = false;
+    ball.setPointerCapture(event.pointerId);
+  });
+  ball.addEventListener('pointermove', event => {
+    if (!ball.hasPointerCapture(event.pointerId)) return;
+    const dx = event.clientX - startX;
+    const dy = event.clientY - startY;
+    if (Math.hypot(dx, dy) > 5) moved = true;
+    if (!moved) return;
+    const x = Math.min(Math.max(0, originX + dx), Math.max(0, window.innerWidth - root.offsetWidth));
+    const y = Math.min(Math.max(0, originY + dy), Math.max(0, window.innerHeight - root.offsetHeight));
+    root.style.setProperty('left', `${x}px`, 'important');
+    root.style.setProperty('top', `${y}px`, 'important');
+    root.style.setProperty('right', 'auto', 'important');
+    root.style.setProperty('bottom', 'auto', 'important');
+  });
+  ball.addEventListener('click', () => {
+    if (moved) { moved = false; return; }
+    onToggle();
+  });
+  return {
+    setActive(active) {
+      ball.title = active ? '恢复原文' : '开始翻译';
+      ball.setAttribute('aria-label', ball.title);
+      ball.classList.toggle('mt-active', active);
+      pause.hidden = !active;
+    },
+    setStatus(text) { statusText = text; if (noticeTimer === undefined) status.textContent = text; },
+    setRetry(visible) { retry.hidden = !visible; },
+    setRetryLabel(label) { retry.textContent = label; },
+    setPaused(paused) { pause.textContent = paused ? '继续' : '暂停'; },
+    notify(message, durationMs = 2800) {
+      status.textContent = message;
+      root.classList.add('mt-notice');
+      if (noticeTimer !== undefined) clearTimeout(noticeTimer);
+      noticeTimer = window.setTimeout(() => {
+        noticeTimer = undefined;
+        root.classList.remove('mt-notice');
+        status.textContent = statusText;
+      }, durationMs);
+    }
+  };
+}

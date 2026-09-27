@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>Options smoke</title></head>
+<body>
+  <span id="build-version"></span>
+  <form id="settings">
+    <label><input type="radio" name="provider" value="deepseek" checked>DeepSeek</label>
+    <label><input type="radio" name="provider" value="ollama">Ollama</label>
+    <div id="deepseek-settings"><input id="api-key"><input id="remember" type="checkbox"></div>
+    <div id="ollama-settings" hidden><input id="ollama-origin"><input id="ollama-model"><datalist id="ollama-models"></datalist><button id="refresh-models" type="button">刷新</button></div>
+    <button type="submit">保存</button><button id="test" type="button">测试</button>
+  </form>
+  <p id="status"></p>
+  <script>
+    const local = new Map();
+    const session = new Map();
+    const area = values => ({
+      get: async keys => Object.fromEntries(keys.filter(key => values.has(key)).map(key => [key, values.get(key)])),
+      set: async items => {
+        for (const [key, value] of Object.entries(items)) values.set(key, value);
+        document.documentElement.dataset.savedProvider = local.get('provider') || '';
+        document.documentElement.dataset.savedModel = local.get('ollamaModel') || '';
+      },
+      remove: async key => values.delete(key)
+    });
+    window.chrome = { storage: { local: area(local), session: area(session) }, runtime: {
+      getManifest: () => ({ version: '0.2.1' }),
+      sendMessage: async () => { throw new Error('Settings page must not use background messaging'); }
+    } };
+    window.fetch = async () => new Response(JSON.stringify({ models: [{ name: 'qwen3-vl:8b' }] }), { status: 200 });
+  </script>
+  <script src="/options.js"></script>
+  <script>
+    setTimeout(() => {
+      document.querySelector('input[value="ollama"]').click();
+      document.querySelector('#refresh-models').click();
+    }, 50);
+    setTimeout(() => {
+      document.querySelector('#ollama-model').value = 'qwen3-vl:8b';
+      document.querySelector('#settings').requestSubmit();
+      document.documentElement.dataset.ollamaVisible = String(!document.querySelector('#ollama-settings').hidden);
+      document.documentElement.dataset.deepseekHidden = String(document.querySelector('#deepseek-settings').hidden);
+      document.documentElement.dataset.modelOptions = String(document.querySelectorAll('#ollama-models option').length);
+    }, 180);
+  </script>
+</body>
+</html>

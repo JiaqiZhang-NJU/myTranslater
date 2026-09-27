@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "myTranslater",
+  "description": "结合网页结构的 DeepSeek 或 Ollama 双语翻译",
+  "version": "0.3.0",
+  "minimum_chrome_version": "116",
+  "permissions": ["storage"],
+  "host_permissions": ["https://api.deepseek.com/*", "http://127.0.0.1/*", "http://localhost/*"],
+  "background": {"service_worker": "background.js"},
+  "options_page": "options.html",
+  "action": {"default_title": "翻译当前网页"},
+  "content_scripts": [{
+    "matches": ["http://*/*", "https://*/*"],
+    "js": ["content.js"],
+    "css": ["content.css"],
+    "run_at": "document_idle"
+  }]
+}

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Atlas Documentation</title>
+  <link rel="stylesheet" href="/content.css">
+</head>
+<body>
+  <main>
+    <h1>About</h1>
+    <p>Atlas automates repetitive development tasks.</p>
+    <h2>Getting started</h2>
+    <p>Install Atlas and open your project.</p>
+  </main>
+  <script>
+    window.chrome = { runtime: { id: 'smoke-extension', onMessage: { addListener: listener => { window.toggleFromToolbar = () => listener({ type: 'TOGGLE_TRANSLATION' }, { id: 'smoke-extension' }, () => {}); } }, sendMessage: async message => {
+      if (message.type === 'GET_PROVIDER_STATUS') return { ok: true, ready: true, identity: 'ollama:mock:v1', settingsVersion: 1 };
+      if (message.type === 'TRANSLATE') {
+        document.documentElement.dataset.groupCount = String(message.batch.groups.length);
+        document.documentElement.dataset.firstGroupRoles = message.batch.groups[0].blocks.map(block => block.role).join(',');
+        return { ok: true, usage: { totalTokens: 17 }, translations: message.batch.groups.flatMap(group => group.blocks.map(block => ({ id: block.id, text: `译文：${block.text}` }))) };
+      }
+      if (message.type === 'CANCEL') document.documentElement.dataset.cancelled = 'true';
+      return { ok: true };
+    } } };
+  </script>
+  <script src="/content.js"></script>
+  <script>
+    setTimeout(() => location.search === '?toolbar' ? window.toggleFromToolbar?.() : document.querySelector('.mt-ball')?.click(), 50);
+    if (location.search === '?restore') setTimeout(() => document.querySelector('.mt-ball')?.click(), 180);
+  </script>
+</body>
+</html>

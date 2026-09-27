@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>myTranslater 设置</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main>
+    <h1>myTranslater <small id="build-version"></small></h1>
+    <div class="entry-notice">
+      <strong>悬浮球在哪里？</strong>
+      <p>这里是设置页，不显示悬浮球。保存后打开或刷新一个普通网页（例如 <a href="https://example.com/" target="_blank" rel="noopener noreferrer">示例网页</a>），在右下角点击“译”。也可以在网页中点击浏览器工具栏上的 myTranslater 图标开始翻译。</p>
+      <p>如果仍看不到，请检查扩展的“网站访问权限”，允许在该网站运行，再刷新网页。浏览器内部页面（如 chrome://）不支持注入悬浮球。</p>
+    </div>
+    <form id="settings">
+      <fieldset class="provider-choice">
+        <legend>翻译方式</legend>
+        <label><input type="radio" name="provider" value="deepseek" checked> DeepSeek API</label>
+        <label><input type="radio" name="provider" value="ollama"> Ollama 本地模型</label>
+      </fieldset>
+      <div id="deepseek-settings">
+        <label for="api-key">DeepSeek API Key</label>
+        <input id="api-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…">
+        <label class="check"><input id="remember" type="checkbox"> 在本机记住 API Key</label>
+        <p class="hint">默认只保留在当前浏览器会话；选择记住会保存在此浏览器的扩展存储中。此存储并非加密保险箱。</p>
+      </div>
+      <div id="ollama-settings" hidden>
+        <label for="ollama-origin">Ollama 本机地址</label>
+        <input id="ollama-origin" type="url" value="http://127.0.0.1:11434" spellcheck="false">
+        <p class="hint">仅支持本机 localhost 或 127.0.0.1。请先启动 Ollama 并下载模型。</p>
+        <label for="ollama-model">本机模型</label>
+        <div class="model-row">
+          <input id="ollama-model" list="ollama-models" placeholder="选择或填写已下载的模型名" spellcheck="false">
+          <datalist id="ollama-models"></datalist>
+          <button id="refresh-models" type="button">刷新列表</button>
+        </div>
+        <p class="hint">只调用本机 Ollama 接口，不需要 DeepSeek API Key。若要确保 Ollama 自身不使用云模型，请在 Ollama 中关闭 Cloud 功能。</p>
+      </div>
+      <div class="actions">
+        <button type="submit">保存</button>
+        <button id="test" type="button">测试 DeepSeek</button>
+      </div>
+    </form>
+    <p id="status" role="status" aria-live="polite"></p>
+    <section>
+      <h2>发送内容与费用</h2>
+      <p>点击悬浮球后，插件会把当前页面的标题、待翻译文本和少量章节信息发送给所选方式。DeepSeek 请求可能产生 API 费用；Ollama 请求发往本机服务，占用本机算力。连接测试会发送一个固定的简短样例。已经发出的 DeepSeek 请求即使取消，仍可能计费。</p>
+      <p>当前开发版支持标题、段落、列表、导航、按钮和具有明确表头的简单表格，并可跟进页面动态新增的内容。合并单元格、复杂网格、图片、PDF、iframe 和 Shadow DOM 暂不支持。扩展申请网站读取权限以显示悬浮球和读取需要翻译的文本。</p>
+    </section>
+    <footer>项目地址：<a href="https://github.com/JiaqiZhang-NJU/myTranslater" target="_blank" rel="noopener noreferrer">GitHub · myTranslater</a></footer>
+  </main>
+  <script src="options.js"></script>
+</body>
+</html>
