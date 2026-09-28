@@ -2,6 +2,10 @@ const marker = /⟦(\/?)i(\d+)⟧/g;
 const inlineTags = new Set(['A', 'STRONG', 'EM', 'B', 'I']);
 const skipped = 'script,style,noscript,pre,code,textarea,input,select,[contenteditable],[translate="no"],[aria-hidden="true"],[hidden],template,.mt-translation,#mt-controls';
 
+export function withoutInlineMarkers(text: string): string {
+  return text.replace(marker, '').replace(/\s+/g, ' ').trim();
+}
+
 export interface InlineSource {
   text: string;
   elements: Map<string, Element>;
@@ -51,6 +55,11 @@ export function validInlineMarkers(source: string, translation: string): boolean
 }
 
 export function renderInline(text: string, elements: Map<string, Element>): DocumentFragment | null {
+  if (elements.size && !text.includes('⟦') && !text.includes('⟧')) {
+    const plain = document.createDocumentFragment();
+    plain.appendChild(document.createTextNode(text));
+    return plain;
+  }
   if (!validInlineMarkers([...elements.keys()].map(key => `⟦${key}⟧⟦/${key}⟧`).join(''), text)) return null;
   const fragment = document.createDocumentFragment();
   const stack: Element[] = [];

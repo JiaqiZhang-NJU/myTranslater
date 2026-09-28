@@ -74,6 +74,65 @@ test('malformed local batch is retried as smaller contextual batches without tru
   } finally { globalThis.fetch = original; }
 });
 
+test('broken nested inline markers fall back to a plain translation for one block', async () => {
+  const original = globalThis.fetch;
+  const rich: TranslationBatch = { pageTitle: 'Atlas', targetLang: 'zh-CN', groups: [{ id: 'g1', blocks: [
+    { id: 'b1', role: 'paragraph', text: 'Read ⟦i1⟧the ⟦i2⟧API guide⟦/i2⟧ first⟦/i1⟧.' }
+  ] }] };
+  const requests: string[] = [];
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as { messages: { content: string }[] };
+    const text = (JSON.parse(body.messages[1].content) as TranslationBatch).groups[0].blocks[0].text;
+    requests.push(text);
+    const translated = text.includes('⟦') ? '请先阅读 ⟦i1⟧API 指南⟦/i2⟧。' : '请先阅读 API 指南。';
+    return new Response(JSON.stringify({ done: true, done_reason: 'stop', message: { content: JSON.stringify({ translations: [{ id: 'b1', text: translated }] }) } }), { status: 200 });
+  };
+  try {
+    const result = await translateConfigured({ provider: 'ollama', ollamaOrigin: 'http://127.0.0.1:11434', ollamaModel: 'qwen3:8b', version: 3 }, '', rich, new AbortController().signal);
+    assert.equal(result.translations[0].text, '请先阅读 API 指南。');
+    assert.deepEqual(requests, [rich.groups[0].blocks[0].text, 'Read the API guide first.']);
+  } finally { globalThis.fetch = original; }
+});
+
+test('Ollama masks dotted API identifiers and restores exact spelling', async () => {
+  const original = globalThis.fetch;
+  const technical: TranslationBatch = { pageTitle: 'DOM', targetLang: 'zh-CN', groups: [{ id: 'g1', blocks: [
+    { id: 'b1', role: 'cell', text: 'Document.body', context: 'Property' }
+  ] }] };
+  const seen: string[] = [];
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as { messages: { content: string }[] };
+    const text = (JSON.parse(body.messages[1].content) as TranslationBatch).groups[0].blocks[0].text;
+    seen.push(text);
+    return new Response(JSON.stringify({ done: true, done_reason: 'stop', message: { content: JSON.stringify({ translations: [{ id: 'b1', text: '文档对象模型 __MT_CODE_1__' }] }) } }), { status: 200 });
+  };
+  try {
+    const result = await translateConfigured({ provider: 'ollama', ollamaOrigin: 'http://127.0.0.1:11434', ollamaModel: 'qwen3:8b', version: 3 }, '', technical, new AbortController().signal);
+    assert.deepEqual(seen, ['__MT_CODE_1__']);
+    assert.equal(result.translations[0].text, 'Document.body');
+  } finally { globalThis.fetch = original; }
+});
+
+test('a model that damages the identifier placeholder gets one unmasked retry', async () => {
+  const original = globalThis.fetch;
+  const technical: TranslationBatch = { pageTitle: 'DOM', targetLang: 'zh-CN', groups: [{ id: 'g1', blocks: [
+    { id: 'b1', role: 'paragraph', text: 'Edit Document.body before applying a new style.' }
+  ] }] };
+  const seen: string[] = [];
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as { messages: { content: string }[] };
+    const text = (JSON.parse(body.messages[1].content) as TranslationBatch).groups[0].blocks[0].text;
+    seen.push(text);
+    const output = text.includes('__MT_CODE_1__') ? '编辑文档.body 后应用新样式。' : '编辑 Document.body 后应用新样式。';
+    return new Response(JSON.stringify({ done: true, done_reason: 'stop', message: { content: JSON.stringify({ translations: [{ id: 'b1', text: output }] }) } }), { status: 200 });
+  };
+  try {
+    const result = await translateConfigured({ provider: 'ollama', ollamaOrigin: 'http://127.0.0.1:11434', ollamaModel: 'qwen3:8b', version: 3 }, '', technical, new AbortController().signal);
+    assert.deepEqual(seen, ['Edit __MT_CODE_1__ before applying a new style.', technical.groups[0].blocks[0].text]);
+    assert.equal(result.translations[0].text, '编辑 Document.body 后应用新样式。');
+  } finally { globalThis.fetch = original; }
+});
+
 test('HTTP 403 identifies Ollama extension-origin configuration', async () => {
   const original = globalThis.fetch;
   globalThis.fetch = async () => new Response('', { status: 403 });

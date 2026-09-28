@@ -1,5 +1,6 @@
 import { isTranslationBatch, type TranslationBatch, type TranslationResult, type Usage } from './shared';
 import { TranslationError, TRANSLATION_PROMPT, validateTranslations } from './translation';
+import { withoutInlineMarkers } from './inline';
 
 export const DEFAULT_OLLAMA_ORIGIN = 'http://127.0.0.1:11434';
 
@@ -89,6 +90,36 @@ function outputSchema(batch: TranslationBatch) {
   };
 }
 
+function maskIdentifiers(batch: TranslationBatch): { masked: TranslationBatch; restore: (result: TranslationResult) => TranslationResult } {
+  const byBlock = new Map<string, Map<string, string>>();
+  const groups = batch.groups.map(group => ({ ...group, blocks: group.blocks.map(block => {
+    const originals = new Map<string, string>();
+    let index = 0;
+    const text = block.text.replace(/\b[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+(?:\(\))?/g, identifier => {
+      let token: string;
+      do { token = `__MT_CODE_${++index}__`; } while (block.text.toUpperCase().includes(token));
+      originals.set(token, identifier);
+      return token;
+    });
+    byBlock.set(block.id, originals);
+    return { ...block, text };
+  }) }));
+  return { masked: { ...batch, groups }, restore(result) {
+    return { ...result, translations: result.translations.map(item => {
+      let text = item.text;
+      const source = batch.groups.flatMap(group => group.blocks).find(block => block.id === item.id)!.text;
+      for (const [token, original] of byBlock.get(item.id) ?? []) {
+        const matches = text.match(new RegExp(token, 'gi'));
+        if (matches?.length !== 1) throw new TranslationError('模型未完整保留技术标识符', 'response');
+        text = text.replace(new RegExp(token, 'i'), () => original);
+      }
+      // A bare API identifier is already the desired display text. Ignore
+      // extra explanatory words invented by the model for such cells.
+      return { ...item, text: /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+(?:\(\))?$/.test(source) ? source : text };
+    }) };
+  } };
+}
+
 function splitBatch(batch: TranslationBatch): [TranslationBatch, TranslationBatch] | null {
   const total = batch.groups.reduce((sum, group) => sum + group.blocks.length, 0);
   if (total < 2) return null;
@@ -128,7 +159,9 @@ export async function translateOllama(originInput: string, modelInput: string, b
   if (signal.aborted) controller.abort();
   const timeout = setTimeout(() => controller.abort(), 180_000);
   try {
-    const request = async (part: TranslationBatch): Promise<TranslationResult> => {
+    const request = async (part: TranslationBatch, protectIdentifiers = true): Promise<TranslationResult> => {
+      const protectedBatch = protectIdentifiers ? maskIdentifiers(part) : null;
+      const requestBatch = protectedBatch?.masked ?? part;
       const response = await fetch(`${origin}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -136,10 +169,10 @@ export async function translateOllama(originInput: string, modelInput: string, b
           model,
           messages: [
             { role: 'system', content: TRANSLATION_PROMPT },
-            { role: 'user', content: JSON.stringify(part) }
+            { role: 'user', content: JSON.stringify(requestBatch) }
           ],
           stream: false,
-          format: outputSchema(part),
+        format: outputSchema(requestBatch),
           think: false,
           options: { num_predict: 2048 }
         }),
@@ -152,14 +185,34 @@ export async function translateOllama(originInput: string, modelInput: string, b
       let payload: unknown;
       try { payload = await response.json(); }
       catch { throw new TranslationError('Ollama 返回的响应不是有效 JSON', 'response'); }
-      return parseOllamaResponse(payload, part);
+      const result = parseOllamaResponse(payload, requestBatch);
+      if (protectedBatch) return protectedBatch.restore(result);
+      for (const item of result.translations) {
+        const original = part.groups.flatMap(group => group.blocks).find(block => block.id === item.id)!.text;
+        for (const identifier of original.match(/\b[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+(?:\(\))?/g) ?? []) {
+          if (!item.text.includes(identifier)) throw new TranslationError('模型改写了技术标识符', 'response');
+        }
+      }
+      return result;
     };
     const translatePart = async (part: TranslationBatch): Promise<TranslationResult> => {
       try { return await request(part); }
       catch (error) {
         if (!(error instanceof TranslationError) || error.kind !== 'response' || controller.signal.aborted) throw error;
         const halves = splitBatch(part);
-        if (!halves) throw new TranslationError(`本地模型未能按要求返回译文：${error.message}`, 'response');
+        if (!halves) {
+          const only = part.groups[0]?.blocks[0];
+          if (error.message === '模型未完整保留技术标识符') return request(part, false);
+          if (error.message === '译文中的行内结构标记已损坏' && only && only.text.includes('⟦')) {
+            const plain = { ...part, groups: [{ ...part.groups[0], blocks: [{ ...only, text: withoutInlineMarkers(only.text) }] }] };
+            try { return await request(plain); }
+            catch (plainError) {
+              if (plainError instanceof TranslationError && plainError.message === '模型未完整保留技术标识符') return request(plain, false);
+              throw plainError;
+            }
+          }
+          throw new TranslationError(`本地模型未能按要求返回译文：${error.message}`, 'response');
+        }
         const left = await translatePart(halves[0]);
         const right = await translatePart(halves[1]);
         return combineResults(left, right);

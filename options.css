@@ -17,6 +17,10 @@ input[type=password], input[type=url], input[list] { width: 100%; box-sizing: bo
 #ollama-settings[hidden], #deepseek-settings[hidden] { display: none; }
 .model-row { display: flex; gap: 9px; }
 .model-row button { white-space: nowrap; background: #e9edf7; color: #2744a3; }
+.model-guidance { margin: 13px 0 16px; padding: 12px 14px; border: 1px solid #c7d6f4; border-radius: 8px; background: #f1f5ff; font-size: 14px; }
+.model-guidance strong { color: #1e3c86; }
+.model-guidance p { margin: 6px 0 0; }
+.model-guidance code { overflow-wrap: anywhere; }
 .check { margin-top: 18px; font-weight: 400; }
 .check input { margin-right: 6px; }
 .hint { color: #536079; font-size: 14px; }

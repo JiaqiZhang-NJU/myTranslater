@@ -36,6 +36,11 @@
           <datalist id="ollama-models"></datalist>
           <button id="refresh-models" type="button">刷新列表</button>
         </div>
+        <div class="model-guidance">
+          <strong>英译中模型建议</strong>
+          <p>建议至少从 <code>qwen3.5:4b</code> 或 <code>gemma3:4b</code> 开始；可在本机运行 <code>ollama pull qwen3.5:4b</code> 下载。资源充足可试 <code>gemma3:12b</code>，但更大不保证更准确。</p>
+          <p>较小模型可能连通成功，却漏译或误译术语。下方“测试 Ollama 模型”只检查简短样例，不能代替整页试译。</p>
+        </div>
         <p class="hint">只调用本机 Ollama 接口，不需要 DeepSeek API Key。若要确保 Ollama 自身不使用云模型，请在 Ollama 中关闭 Cloud 功能。</p>
         <p class="hint">如果测试出现 HTTP 403，请把 <code id="ollama-extension-origin"></code> 加入 Windows 用户环境变量 <code>OLLAMA_ORIGINS</code>，彻底退出并重启 Ollama。只放行此扩展即可。</p>
       </div>
