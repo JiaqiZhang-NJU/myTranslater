@@ -71,6 +71,53 @@ export function parseOllamaResponse(data: unknown, batch: TranslationBatch): Tra
   return { translations, usage };
 }
 
+function outputSchema(batch: TranslationBatch) {
+  const ids = batch.groups.flatMap(group => group.blocks.map(block => block.id));
+  return {
+    type: 'object',
+    properties: {
+      translations: {
+        type: 'array', minItems: ids.length, maxItems: ids.length,
+        items: {
+          type: 'object',
+          properties: { id: { type: 'string', enum: ids }, text: { type: 'string', minLength: 1, maxLength: 5000 } },
+          required: ['id', 'text'], additionalProperties: false
+        }
+      }
+    },
+    required: ['translations'], additionalProperties: false
+  };
+}
+
+function splitBatch(batch: TranslationBatch): [TranslationBatch, TranslationBatch] | null {
+  const total = batch.groups.reduce((sum, group) => sum + group.blocks.length, 0);
+  if (total < 2) return null;
+  const left = [] as TranslationBatch['groups'];
+  const right = [] as TranslationBatch['groups'];
+  let count = 0;
+  const pivot = Math.floor(total / 2);
+  for (const group of batch.groups) {
+    const before = Math.max(0, Math.min(group.blocks.length, pivot - count));
+    if (before) left.push({ ...group, blocks: group.blocks.slice(0, before) });
+    if (before < group.blocks.length) right.push({ ...group, blocks: group.blocks.slice(before) });
+    count += group.blocks.length;
+  }
+  return [{ ...batch, groups: left }, { ...batch, groups: right }];
+}
+
+function combineResults(left: TranslationResult, right: TranslationResult): TranslationResult {
+  const a = left.usage;
+  const b = right.usage;
+  return {
+    translations: [...left.translations, ...right.translations],
+    usage: a && b ? {
+      promptTokens: a.promptTokens + b.promptTokens,
+      completionTokens: a.completionTokens + b.completionTokens,
+      totalTokens: a.totalTokens + b.totalTokens
+    } : null
+  };
+}
+
 export async function translateOllama(originInput: string, modelInput: string, batch: TranslationBatch, signal: AbortSignal): Promise<TranslationResult> {
   if (!isTranslationBatch(batch)) throw new TranslationError('请求内容超过本版限制', 'response');
   const origin = normalizeOllamaOrigin(originInput);
@@ -79,29 +126,46 @@ export async function translateOllama(originInput: string, modelInput: string, b
   const onAbort = () => controller.abort();
   signal.addEventListener('abort', onAbort, { once: true });
   if (signal.aborted) controller.abort();
-  const timeout = setTimeout(() => controller.abort(), 120_000);
+  const timeout = setTimeout(() => controller.abort(), 180_000);
   try {
-    const response = await fetch(`${origin}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: TRANSLATION_PROMPT },
-          { role: 'user', content: JSON.stringify(batch) }
-        ],
-        stream: false,
-        format: 'json',
-        think: false,
-        options: { num_predict: 2048 }
-      }),
-      redirect: 'error',
-      credentials: 'omit',
-      signal: controller.signal
-    });
-    if (response.status === 404) throw new TranslationError('Ollama 未找到该模型；请先下载模型', 'config');
-    if (!response.ok) throw ollamaHttpError('Ollama 请求失败', response.status);
-    return parseOllamaResponse(await response.json(), batch);
+    const request = async (part: TranslationBatch): Promise<TranslationResult> => {
+      const response = await fetch(`${origin}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: TRANSLATION_PROMPT },
+            { role: 'user', content: JSON.stringify(part) }
+          ],
+          stream: false,
+          format: outputSchema(part),
+          think: false,
+          options: { num_predict: 2048 }
+        }),
+        redirect: 'error',
+        credentials: 'omit',
+        signal: controller.signal
+      });
+      if (response.status === 404) throw new TranslationError('Ollama 未找到该模型；请先下载模型', 'config');
+      if (!response.ok) throw ollamaHttpError('Ollama 请求失败', response.status);
+      let payload: unknown;
+      try { payload = await response.json(); }
+      catch { throw new TranslationError('Ollama 返回的响应不是有效 JSON', 'response'); }
+      return parseOllamaResponse(payload, part);
+    };
+    const translatePart = async (part: TranslationBatch): Promise<TranslationResult> => {
+      try { return await request(part); }
+      catch (error) {
+        if (!(error instanceof TranslationError) || error.kind !== 'response' || controller.signal.aborted) throw error;
+        const halves = splitBatch(part);
+        if (!halves) throw new TranslationError(`本地模型未能按要求返回译文：${error.message}`, 'response');
+        const left = await translatePart(halves[0]);
+        const right = await translatePart(halves[1]);
+        return combineResults(left, right);
+      }
+    };
+    return await translatePart(batch);
   } catch (error) {
     if (error instanceof TranslationError) throw error;
     if (controller.signal.aborted) throw new TranslationError('Ollama 请求已取消或超时', 'cancelled');

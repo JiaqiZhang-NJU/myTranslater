@@ -46,11 +46,31 @@ test('provider selection calls Ollama without API key and keeps contextual JSON 
     const result = await translateConfigured(settings, '', batch, new AbortController().signal);
     assert.equal(request?.model, 'qwen3:8b');
     assert.equal(request?.stream, false);
-    assert.equal(request?.format, 'json');
+    assert.deepEqual(((request?.format as { properties: { translations: { items: { properties: { id: { enum: string[] } } } } } }).properties.translations.items.properties.id.enum), ['b1', 'b2']);
     assert.equal(request?.think, false);
     assert.equal(JSON.parse((request?.messages as { content: string }[])[1].content).groups[0].blocks[0].text, 'About');
     assert.equal(result.usage?.totalTokens, 61);
     assert.notEqual(providerIdentity(settings), providerIdentity({ provider: 'deepseek', ollamaOrigin: settings.ollamaOrigin, ollamaModel: settings.ollamaModel, version: 3 }));
+  } finally { globalThis.fetch = original; }
+});
+
+test('malformed local batch is retried as smaller contextual batches without trusting wrong IDs', async () => {
+  const original = globalThis.fetch;
+  const requested: string[][] = [];
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as { messages: { content: string }[]; format: unknown };
+    const part = JSON.parse(body.messages[1].content) as TranslationBatch;
+    const ids = part.groups.flatMap(group => group.blocks.map(block => block.id));
+    requested.push(ids);
+    const items = ids.length > 1 ? [{ id: 'wrong', text: '项目简介' }, { id: 'b2', text: 'Atlas 可自动执行开发任务。' }]
+      : [{ id: ids[0], text: ids[0] === 'b1' ? '项目简介' : 'Atlas 可自动执行开发任务。' }];
+    return new Response(JSON.stringify({ done: true, done_reason: 'stop', message: { content: JSON.stringify({ translations: items }) }, prompt_eval_count: 10, eval_count: 5 }), { status: 200 });
+  };
+  try {
+    const result = await translateConfigured({ provider: 'ollama', ollamaOrigin: 'http://127.0.0.1:11434', ollamaModel: 'qwen3:8b', version: 3 }, '', batch, new AbortController().signal);
+    assert.deepEqual(requested, [['b1', 'b2'], ['b1'], ['b2']]);
+    assert.deepEqual(result.translations, translations);
+    assert.equal(result.usage?.totalTokens, 30);
   } finally { globalThis.fetch = original; }
 });
 

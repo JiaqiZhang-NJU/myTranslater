@@ -47,7 +47,7 @@ function release(): void {
 
 function sessionKey(tabId: number, sessionId: string): string { return `${tabId}:${sessionId}`; }
 
-interface TabBudget { documentId: string; reserved: number; limit: number }
+interface TabBudget { documentId: string; used: number; inFlight: number; limit: number }
 
 async function withBudget<T>(tabId: number, operation: () => Promise<T>): Promise<T> {
   const prior = budgetSerial.get(tabId) ?? Promise.resolve();
@@ -63,18 +63,27 @@ async function withBudget<T>(tabId: number, operation: () => Promise<T>): Promis
   }
 }
 
-async function budget(tabId: number, documentId: string, cost = 0, extend = false): Promise<TabBudget> {
+async function budget(tabId: number, documentId: string, provider: 'deepseek' | 'ollama', cost = 0, extend = false): Promise<TabBudget> {
   return withBudget(tabId, async () => {
-    const key = `budget:${tabId}`;
+    const key = `budget:${tabId}:${provider}`;
     const raw = (await chrome.storage.session.get(key))[key] as Partial<TabBudget> | undefined;
-    const current: TabBudget = raw?.documentId === documentId && Number.isSafeInteger(raw.reserved) && Number.isSafeInteger(raw.limit)
-      ? { documentId, reserved: raw.reserved!, limit: raw.limit! }
-      : { documentId, reserved: 0, limit: 30_000 };
-    if (cost && current.reserved + cost > current.limit) throw new TranslationError('本页达到预计 token 上限；可选择增加本页预算后继续', 'quota');
+    const current: TabBudget = raw?.documentId === documentId && Number.isSafeInteger(raw.used) && Number.isSafeInteger(raw.inFlight) && Number.isSafeInteger(raw.limit)
+      ? { documentId, used: raw.used!, inFlight: raw.inFlight!, limit: raw.limit! }
+      : { documentId, used: 0, inFlight: 0, limit: 30_000 };
+    if (cost && current.used + current.inFlight + cost > current.limit) throw new TranslationError('本页达到预计 token 上限；可选择增加本页预算后继续', 'quota');
     if (extend) current.limit += 30_000;
-    current.reserved += cost;
+    current.inFlight += cost;
     await chrome.storage.session.set({ [key]: current });
     return current;
+  });
+}
+
+async function settleBudget(tabId: number, documentId: string, provider: 'deepseek' | 'ollama', reservedCost: number, actualCost: number): Promise<void> {
+  await withBudget(tabId, async () => {
+    const key = `budget:${tabId}:${provider}`;
+    const current = (await chrome.storage.session.get(key))[key] as TabBudget | undefined;
+    if (current?.documentId !== documentId) return;
+    await chrome.storage.session.set({ [key]: { ...current, used: current.used + actualCost, inFlight: Math.max(0, current.inFlight - reservedCost) } });
   });
 }
 
@@ -87,22 +96,32 @@ async function translateFromTab(tabId: number, documentId: string, sessionId: st
   if (settings.provider === 'ollama' && !settings.ollamaModel) throw new TranslationError('请先选择 Ollama 本机模型', 'config');
   const identity = sessionKey(tabId, sessionId);
   const cost = Math.ceil(JSON.stringify(batch).length / 2) + 2048;
-  await budget(tabId, documentId, cost);
+  await budget(tabId, documentId, settings.provider, cost);
   const controller = new AbortController();
   const set = controllers.get(identity) ?? new Set<AbortController>();
   set.add(controller);
   controllers.set(identity, set);
   let acquired = false;
+  let requestStarted = false;
+  let actualCost = 0;
   try {
     await acquire(controller.signal);
     acquired = true;
+    requestStarted = true;
     const result = await translateConfigured(settings, key, batch, controller.signal);
     if ((await providerSettings()).version !== settingsVersion) throw new TranslationError('翻译方式已更新，请重新开启本页翻译', 'config');
+    actualCost = result.usage?.totalTokens ?? cost;
     return { ok: true as const, ...result };
+  } catch (error) {
+    // A failed cloud request may still be billed; retain its estimate only if
+    // the provider call began. Failed local requests consume no API budget.
+    if (requestStarted && settings.provider === 'deepseek') actualCost = cost;
+    throw error;
   } finally {
     if (acquired) release();
     set.delete(controller);
     if (!set.size) controllers.delete(identity);
+    await settleBudget(tabId, documentId, settings.provider, cost, actualCost);
   }
 }
 
@@ -125,7 +144,7 @@ async function handle(message: unknown, sender: chrome.runtime.MessageSender) {
       for (const controller of controllers.get(identity) ?? []) controller.abort();
       return { ok: true };
     }
-    if (data.type === 'EXTEND_BUDGET') { await budget(tabId, documentId, 0, true); return { ok: true }; }
+    if (data.type === 'EXTEND_BUDGET') { const settings = await providerSettings(); await budget(tabId, documentId, settings.provider, 0, true); return { ok: true }; }
     if (data.type === 'TRANSLATE' && typeof data.sessionId === 'string' && /^[\w-]{1,80}$/.test(data.sessionId) && Number.isSafeInteger(data.settingsVersion) && data.settingsVersion >= 0 && isTranslationBatch(data.batch)) {
       return translateFromTab(tabId, documentId, data.sessionId, data.settingsVersion, data.batch);
     }

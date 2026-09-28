@@ -24,15 +24,16 @@ export function validateTranslations(content: string, batch: TranslationBatch): 
   const translations = (parsed as { translations: unknown[] }).translations;
   const expected = new Set(batch.groups.flatMap(group => group.blocks.map(block => block.id)));
   const sources = new Map(batch.groups.flatMap(group => group.blocks.map(block => [block.id, block.text] as const)));
-  if (translations.length !== expected.size) throw new TranslationError('译文数量与原文不一致', 'response');
+  if (translations.length !== expected.size) throw new TranslationError(`译文数量不符：需要 ${expected.size} 条，收到 ${translations.length} 条`, 'response');
   const seen = new Set<string>();
   const normalized: { id: string; text: string }[] = [];
   for (const item of translations) {
     if (!item || typeof item !== 'object') throw new TranslationError('译文条目格式错误', 'response');
     const entry = item as { id?: unknown; text?: unknown };
-    if (typeof entry.id !== 'string' || !expected.has(entry.id) || seen.has(entry.id) || typeof entry.text !== 'string' || !entry.text.trim() || entry.text.length > 5000) {
-      throw new TranslationError('译文 ID、内容或长度不符合要求', 'response');
-    }
+    if (typeof entry.id !== 'string' || !expected.has(entry.id)) throw new TranslationError('模型返回了不属于当前批次的译文 ID', 'response');
+    if (seen.has(entry.id)) throw new TranslationError('模型返回了重复的译文 ID', 'response');
+    if (typeof entry.text !== 'string' || !entry.text.trim()) throw new TranslationError('模型返回了空译文或非文本译文', 'response');
+    if (entry.text.length > 5000) throw new TranslationError('模型返回的单条译文超过长度上限', 'response');
     seen.add(entry.id);
     if (!validInlineMarkers(sources.get(entry.id)!, entry.text)) throw new TranslationError('译文中的行内结构标记已损坏', 'response');
     normalized.push({ id: entry.id, text: entry.text.trim() });

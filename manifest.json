@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "myTranslater",
   "description": "结合网页结构的 DeepSeek 或 Ollama 双语翻译",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "minimum_chrome_version": "116",
   "permissions": ["storage"],
   "host_permissions": ["https://api.deepseek.com/*", "http://127.0.0.1/*", "http://localhost/*"],

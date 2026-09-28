@@ -81,6 +81,15 @@ test('background keeps provider selection and key separate, and rejects stale se
     const translated = await send({ type: 'TRANSLATE', sessionId: 'session1', settingsVersion: 1, batch }, tabSender);
     assert.equal(translated.ok, true);
     assert.equal(translated.usage.totalTokens, 50);
+    const localBudgetBefore = (session.get('budget:7:ollama') as { used: number }).used;
+    const oneBlock: TranslationBatch = { ...batch, groups: [{ ...batch.groups[0], blocks: [batch.groups[0].blocks[0]] }] };
+    globalThis.fetch = async () => new Response(JSON.stringify({ done: true, done_reason: 'stop', message: { content: JSON.stringify({ translations: [{ id: 'wrong', text: '关于' }] }) } }), { status: 200 });
+    for (let index = 0; index < 15; index++) {
+      const failed = await send({ type: 'TRANSLATE', sessionId: `local-failed-${index}`, settingsVersion: 1, batch: oneBlock }, tabSender);
+      assert.equal(failed.kind, 'response');
+      assert.match(failed.error, /译文 ID/);
+    }
+    assert.deepEqual(session.get('budget:7:ollama'), { documentId: 'https://example.com/', used: localBudgetBefore, inFlight: 0, limit: 30_000 });
     await saveSettings({ provider: 'deepseek', apiKey: 'test-key', remember: true, ollamaOrigin: 'http://127.0.0.1:11434', ollamaModel: 'qwen3:8b' });
     assert.equal((await loadSettings()).apiKey, 'test-key');
     assert.equal(local.get('apiKey'), 'test-key');
@@ -98,9 +107,18 @@ test('background keeps provider selection and key separate, and rejects stale se
     const cloud = await send({ type: 'TRANSLATE', sessionId: 'session2', settingsVersion: 2, batch }, tabSender);
     assert.equal(cloud.ok, true);
     assert.equal(cloud.usage.totalTokens, 57);
-    let exhausted = false;
+    assert.equal((session.get('budget:7:deepseek') as { used: number }).used, 57);
     for (let index = 0; index < 20; index++) {
       const attempt = await send({ type: 'TRANSLATE', sessionId: `budget-${index}`, settingsVersion: 2, batch }, tabSender);
+      assert.equal(attempt.ok, true);
+    }
+    assert.equal((session.get('budget:7:deepseek') as { used: number }).used, 57 * 21);
+    globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ translations: [
+      { id: 'b1', text: '项目简介' }, { id: 'b2', text: 'Atlas 是一个工具。' }
+    ] }) } }], usage: { prompt_tokens: 4000, completion_tokens: 2000, total_tokens: 6000 } }), { status: 200 });
+    let exhausted = false;
+    for (let index = 0; index < 10; index++) {
+      const attempt = await send({ type: 'TRANSLATE', sessionId: `expensive-${index}`, settingsVersion: 2, batch }, tabSender);
       if (!attempt.ok) { assert.equal(attempt.kind, 'quota'); exhausted = true; break; }
     }
     assert.equal(exhausted, true);
