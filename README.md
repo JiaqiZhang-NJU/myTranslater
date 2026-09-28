@@ -2,7 +2,7 @@
 
 基于网页结构的轻量双语翻译扩展，支持桌面版 Chrome / Edge。打开普通网页后，点击右下角的「译」悬浮球即可开始翻译，再点一次恢复原文。悬浮球旁的状态与操作只在鼠标悬停、键盘聚焦或出现短暂提示时显示。
 
-项目地址：[JiaqiZhang-NJU/myTranslater](https://github.com/JiaqiZhang-NJU/myTranslater)。
+项目地址：[JiaqiZhang-NJU/myTranslater](https://github.com/JiaqiZhang-NJU/myTranslater)。官网与安装包下载页：<https://translate.jqzhang.top/>。
 
 ## 功能
 
@@ -14,7 +14,7 @@
 
 ## 下载与安装
 
-1. 在 [Releases](https://github.com/JiaqiZhang-NJU/myTranslater/releases/latest) 下载最新的 `myTranslater-vX.Y.Z-chrome-edge.zip`，解压到一个固定文件夹。
+1. 在官网 <https://translate.jqzhang.top/> 或 [Releases](https://github.com/JiaqiZhang-NJU/myTranslater/releases/latest) 下载最新的 `myTranslater-vX.Y.Z-chrome-edge.zip`，解压到一个固定文件夹。两处是同一个安装包。
 2. 在 Chrome 打开 `chrome://extensions`，或在 Edge 打开 `edge://extensions`，开启「开发者模式」。
 3. 点击「加载已解压的扩展程序」，选择**直接包含 `manifest.json`** 的解压文件夹。ZIP 本身和 GitHub 自动生成的 Source code 压缩包不能直接作为此步骤的安装目录。
 4. 打开扩展设置页，选择 DeepSeek API 或 Ollama 本地模型并保存；刷新已经打开的普通网页，然后点击右下角「译」。
