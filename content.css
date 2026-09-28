@@ -78,6 +78,12 @@ a > .mt-translation, button > .mt-translation, li > .mt-translation, td > .mt-tr
   max-width: 100% !important;
   margin: .15em 0 0 !important;
   padding-left: .35em !important;
+  /* Translations placed inside a link, button or cell must stay readable on
+     whatever background that element uses, so they follow the surrounding
+     text colour instead of the page-level blue tint. The smaller font size
+     and the left rule keep the translation distinguishable from the source. */
+  border-left: 2px solid currentColor !important;
+  color: inherit !important;
   font-size: .78em !important;
   line-height: 1.25 !important;
   white-space: normal !important;
