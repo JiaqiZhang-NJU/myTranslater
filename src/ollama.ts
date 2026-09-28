@@ -3,6 +3,15 @@ import { TranslationError, TRANSLATION_PROMPT, validateTranslations } from './tr
 
 export const DEFAULT_OLLAMA_ORIGIN = 'http://127.0.0.1:11434';
 
+function ollamaHttpError(action: string, status: number): TranslationError {
+  if (status === 403) {
+    const id = globalThis.chrome?.runtime?.id;
+    const origin = id ? `chrome-extension://${id}` : '当前扩展的 chrome-extension:// 来源';
+    return new TranslationError(`Ollama 拒绝扩展来源（HTTP 403）。请将 ${origin} 加入 OLLAMA_ORIGINS，然后彻底退出并重启 Ollama。`, 'network');
+  }
+  return new TranslationError(`${action}（HTTP ${status}）`, 'network');
+}
+
 export function normalizeOllamaOrigin(input: string): string {
   let url: URL;
   try { url = new URL(input.trim()); }
@@ -30,7 +39,7 @@ export async function listOllamaModels(originInput: string, signal?: AbortSignal
   } catch {
     throw new TranslationError('无法连接本机 Ollama；请确认服务已启动', 'network');
   }
-  if (!response.ok) throw new TranslationError(`读取 Ollama 模型失败（HTTP ${response.status}）`, 'network');
+  if (!response.ok) throw ollamaHttpError('读取 Ollama 模型失败', response.status);
   let payload: unknown;
   try { payload = await response.json(); }
   catch { throw new TranslationError('Ollama 模型列表格式错误', 'response'); }
@@ -91,7 +100,7 @@ export async function translateOllama(originInput: string, modelInput: string, b
       signal: controller.signal
     });
     if (response.status === 404) throw new TranslationError('Ollama 未找到该模型；请先下载模型', 'config');
-    if (!response.ok) throw new TranslationError(`Ollama 请求失败（HTTP ${response.status}）`, 'network');
+    if (!response.ok) throw ollamaHttpError('Ollama 请求失败', response.status);
     return parseOllamaResponse(await response.json(), batch);
   } catch (error) {
     if (error instanceof TranslationError) throw error;

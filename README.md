@@ -14,7 +14,7 @@
 
 ## 下载与安装
 
-1. 在 [Releases](https://github.com/JiaqiZhang-NJU/myTranslater/releases/latest) 下载 `myTranslater-v0.3.0-chrome-edge.zip`，解压到一个固定文件夹。
+1. 在 [Releases](https://github.com/JiaqiZhang-NJU/myTranslater/releases/latest) 下载最新的 `myTranslater-vX.Y.Z-chrome-edge.zip`，解压到一个固定文件夹。
 2. 在 Chrome 打开 `chrome://extensions`，或在 Edge 打开 `edge://extensions`，开启「开发者模式」。
 3. 点击「加载已解压的扩展程序」，选择**直接包含 `manifest.json`** 的解压文件夹。ZIP 本身和 GitHub 自动生成的 Source code 压缩包不能直接作为此步骤的安装目录。
 4. 打开扩展设置页，选择 DeepSeek API 或 Ollama 本地模型并保存；刷新已经打开的普通网页，然后点击右下角「译」。
@@ -41,4 +41,4 @@ npm run build
 
 打开或刷新普通 `http://`、`https://` 网页，右下角应出现「译」。悬停可查看进度、暂停/继续、重试和设置；点击浏览器工具栏图标也能切换翻译。设置页与 `chrome://` 等浏览器内部页面无法注入悬浮球。若普通网页看不到，检查该扩展的「网站访问权限」并刷新网页。
 
-如果 Ollama 报来源权限错误，请参考 [Ollama 官方说明](https://docs.ollama.com/faq#how-can-i-allow-additional-web-origins-to-access-ollama)，将扩展的 `chrome-extension://<扩展 ID>` 加入 `OLLAMA_ORIGINS` 后重启 Ollama。插件只接受本机回环地址，不接受网页指定任意服务地址。
+如果 Ollama 测试显示 **HTTP 403**：在扩展管理页打开 myTranslater 的「详细信息」复制扩展 ID；彻底退出 Ollama，在 Windows「编辑账户的环境变量」中新建或追加 `OLLAMA_ORIGINS=chrome-extension://<扩展 ID>`，再启动 Ollama。若已有 `OLLAMA_ORIGINS`，用英文逗号追加这一项。只放行本扩展即可，不必使用通配符。详见 [Ollama 官方来源设置说明](https://docs.ollama.com/faq#how-can-i-allow-additional-web-origins-to-access-ollama)。插件只接受本机回环地址，不接受网页指定任意服务地址。

@@ -37,6 +37,7 @@
           <button id="refresh-models" type="button">刷新列表</button>
         </div>
         <p class="hint">只调用本机 Ollama 接口，不需要 DeepSeek API Key。若要确保 Ollama 自身不使用云模型，请在 Ollama 中关闭 Cloud 功能。</p>
+        <p class="hint">如果测试出现 HTTP 403，请把 <code id="ollama-extension-origin"></code> 加入 Windows 用户环境变量 <code>OLLAMA_ORIGINS</code>，彻底退出并重启 Ollama。只放行此扩展即可。</p>
       </div>
       <div class="actions">
         <button type="submit">保存</button>

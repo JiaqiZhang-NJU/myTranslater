@@ -54,6 +54,16 @@ test('provider selection calls Ollama without API key and keeps contextual JSON 
   } finally { globalThis.fetch = original; }
 });
 
+test('HTTP 403 identifies Ollama extension-origin configuration', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => new Response('', { status: 403 });
+  try {
+    const settings = { provider: 'ollama' as const, ollamaOrigin: 'http://127.0.0.1:11434', ollamaModel: 'qwen3:8b', version: 3 };
+    await assert.rejects(translateConfigured(settings, '', batch, new AbortController().signal), error =>
+      error instanceof TranslationError && error.message.includes('OLLAMA_ORIGINS') && error.message.includes('HTTP 403'));
+  } finally { globalThis.fetch = original; }
+});
+
 test('Ollama response rejects missing IDs and incomplete generation', () => {
   const reply = (items: unknown[], reason = 'stop') => ({ done: true, done_reason: reason, message: { content: JSON.stringify({ translations: items }) } });
   assert.throws(() => parseOllamaResponse(reply([{ id: 'b1', text: '项目简介' }]), batch), TranslationError);

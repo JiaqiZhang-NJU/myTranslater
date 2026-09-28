@@ -14,6 +14,7 @@ const statusElement = document.getElementById('status') as HTMLParagraphElement;
 const testButton = document.getElementById('test') as HTMLButtonElement;
 const saveButton = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
 document.getElementById('build-version')!.textContent = `v${chrome.runtime.getManifest().version}`;
+document.getElementById('ollama-extension-origin')!.textContent = `chrome-extension://${chrome.runtime.id}`;
 
 function setStatus(message: string): void { statusElement.textContent = message; }
 function errorMessage(error: unknown, fallback: string): string { return error instanceof TranslationError ? error.message : fallback; }
