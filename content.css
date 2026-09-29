@@ -9,6 +9,7 @@
   font: 13px/1.4 system-ui, sans-serif !important;
   direction: ltr !important;
 }
+#mt-controls.mt-hidden { display: none !important; }
 #mt-controls .mt-ball {
   width: 48px !important;
   height: 48px !important;
@@ -42,9 +43,9 @@
   transform: translateX(5px) !important;
   transition: opacity .16s ease, transform .16s ease, visibility .16s !important;
 }
-#mt-controls:hover .mt-panel,
-#mt-controls:focus-within .mt-panel,
-#mt-controls.mt-notice .mt-panel {
+#mt-controls:hover:not(.mt-menu-open) .mt-panel,
+#mt-controls:focus-within:not(.mt-menu-open) .mt-panel,
+#mt-controls.mt-notice:not(.mt-menu-open) .mt-panel {
   opacity: 1 !important;
   visibility: visible !important;
   pointer-events: auto !important;
@@ -60,6 +61,34 @@
   font: inherit !important;
 }
 #mt-controls .mt-panel button[hidden] { display: none !important; }
+#mt-controls .mt-context-menu {
+  position: fixed !important;
+  z-index: 2147483647 !important;
+  min-width: 190px !important;
+  max-width: calc(100vw - 16px) !important;
+  padding: 4px !important;
+  border-radius: 8px !important;
+  background: #fff !important;
+  box-shadow: 0 4px 16px #0004 !important;
+  color: #1d2330 !important;
+  font: 13px/1.4 system-ui, sans-serif !important;
+}
+#mt-controls .mt-context-menu[hidden] { display: none !important; }
+#mt-controls .mt-context-menu button {
+  display: block !important;
+  width: 100% !important;
+  padding: 8px 10px !important;
+  border: 0 !important;
+  border-radius: 5px !important;
+  background: transparent !important;
+  color: inherit !important;
+  font: inherit !important;
+  text-align: left !important;
+  white-space: nowrap !important;
+  cursor: pointer !important;
+}
+#mt-controls .mt-context-menu button:hover,
+#mt-controls .mt-context-menu button:focus-visible { background: #edf2ff !important; }
 .mt-translation {
   display: block !important;
   margin: .25em 0 .7em !important;

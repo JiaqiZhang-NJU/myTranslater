@@ -10,7 +10,9 @@ interface RuntimeResponse extends Partial<TranslationResult> {
 
 if (window.top === window && document.body) {
   let active = false;
-  let starting = false;
+  let hiddenForPage = false;
+  let pageRevision = 0;
+  let startingForPage: number | null = null;
   let paused = false;
   let processing = false;
   let blocked = false;
@@ -28,7 +30,7 @@ if (window.top === window && document.body) {
   const translated = new Set<string>();
   const cache = new Map<string, Map<string, string>>();
   let cacheChars = 0;
-  const controls = createControls(toggle, retry, () => { void chrome.runtime.sendMessage({ type: 'OPEN_OPTIONS' }); }, pauseOrResume);
+  const controls = createControls(toggle, retry, () => { void chrome.runtime.sendMessage({ type: 'OPEN_OPTIONS' }); }, pauseOrResume, hideForPage);
 
   function status(message = ''): void {
     const total = [...groups.values()].reduce((sum, group) => sum + group.group.blocks.length, 0);
@@ -217,10 +219,12 @@ if (window.top === window && document.body) {
   }
 
   async function start(): Promise<void> {
-    if (starting || active) return;
-    starting = true;
+    if (startingForPage === pageRevision || active) return;
+    const requestedPage = pageRevision;
+    startingForPage = requestedPage;
     try {
       const check = await chrome.runtime.sendMessage({ type: 'GET_PROVIDER_STATUS' }) as RuntimeResponse;
+      if (hiddenForPage || requestedPage !== pageRevision) return;
       if (!check?.ok || !check.ready || !check.identity || !Number.isSafeInteger(check.settingsVersion)) {
         status(check?.message || check?.error || '请先配置翻译方式');
         void chrome.runtime.sendMessage({ type: 'OPEN_OPTIONS' });
@@ -229,9 +233,9 @@ if (window.top === window && document.body) {
       providerIdentity = check.identity;
       settingsVersion = check.settingsVersion!;
     } catch {
-      status('扩展后台暂时不可用');
+      if (!hiddenForPage && requestedPage === pageRevision) status('扩展后台暂时不可用');
       return;
-    } finally { starting = false; }
+    } finally { if (startingForPage === requestedPage) startingForPage = null; }
     active = true;
     paused = false;
     blocked = false;
@@ -256,6 +260,7 @@ if (window.top === window && document.body) {
     sessionId = '';
     observer?.disconnect();
     observer = null;
+    mainRoot = null;
     if (scanTimer !== undefined) clearTimeout(scanTimer);
     scanTimer = undefined;
     dirtyScopes.clear();
@@ -273,7 +278,20 @@ if (window.top === window && document.body) {
     void chrome.runtime.sendMessage({ type: 'CANCEL', sessionId: old }).catch(() => {});
   }
 
-  function toggle(): void { if (active) stop(); else void start(); }
+  function hideForPage(): void {
+    hiddenForPage = true;
+    pageRevision += 1;
+    stop();
+    controls.setHidden(true);
+  }
+
+  function toggle(): void {
+    if (hiddenForPage) {
+      hiddenForPage = false;
+      controls.setHidden(false);
+    }
+    if (active) stop(); else void start();
+  }
   function pauseOrResume(): void {
     if (!active) return;
     paused = !paused;
@@ -306,7 +324,9 @@ if (window.top === window && document.body) {
     const next = location.origin + location.pathname + location.search;
     if (next !== currentDocumentUrl || (mainRoot && !mainRoot.isConnected)) {
       currentDocumentUrl = next;
+      pageRevision += 1;
       if (active) { stop(); cache.clear(); cacheChars = 0; status('页面已切换；点击悬浮球翻译新页面'); }
+      if (hiddenForPage) { hiddenForPage = false; controls.setHidden(false); }
     }
   }, 1000);
 }

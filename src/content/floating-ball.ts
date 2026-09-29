@@ -5,9 +5,10 @@ export interface Controls {
   setRetryLabel(label: string): void;
   setPaused(paused: boolean): void;
   notify(message: string, durationMs?: number): void;
+  setHidden(hidden: boolean): void;
 }
 
-export function createControls(onToggle: () => void, onRetry: () => void, onSettings: () => void, onPause: () => void): Controls {
+export function createControls(onToggle: () => void, onRetry: () => void, onSettings: () => void, onPause: () => void, onHide: () => void): Controls {
   const root = document.createElement('div');
   root.id = 'mt-controls';
   const ball = document.createElement('button');
@@ -36,7 +37,18 @@ export function createControls(onToggle: () => void, onRetry: () => void, onSett
   settings.textContent = '设置';
   settings.addEventListener('click', onSettings);
   panel.append(status, retry, pause, settings);
-  root.append(ball, panel);
+  const menu = document.createElement('div');
+  menu.className = 'mt-context-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', '悬浮球选项');
+  menu.hidden = true;
+  const hide = document.createElement('button');
+  hide.type = 'button';
+  hide.setAttribute('role', 'menuitem');
+  hide.textContent = '在当前页面隐藏悬浮球';
+  hide.addEventListener('click', () => { closeMenu(); onHide(); });
+  menu.append(hide);
+  root.append(ball, panel, menu);
   document.documentElement.append(root);
   let statusText = status.textContent ?? '';
   let noticeTimer: number | undefined;
@@ -45,6 +57,25 @@ export function createControls(onToggle: () => void, onRetry: () => void, onSett
   let originX = 0;
   let originY = 0;
   let moved = false;
+  function closeMenu(): void { menu.hidden = true; root.classList.remove('mt-menu-open'); }
+  ball.addEventListener('contextmenu', event => {
+    event.preventDefault();
+    event.stopPropagation();
+    menu.hidden = false;
+    root.classList.add('mt-menu-open');
+    const rect = ball.getBoundingClientRect();
+    const width = menu.offsetWidth;
+    const height = menu.offsetHeight;
+    menu.style.left = `${Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8))}px`;
+    menu.style.top = `${rect.top >= height + 8 ? rect.top - height - 8 : Math.min(rect.bottom + 8, window.innerHeight - height - 8)}px`;
+    hide.focus();
+  });
+  document.addEventListener('pointerdown', event => {
+    if (!menu.hidden && !menu.contains(event.target as Node) && event.target !== ball) closeMenu();
+  }, true);
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && !menu.hidden) { closeMenu(); ball.focus(); }
+  });
   ball.addEventListener('pointerdown', event => {
     if (event.button !== 0) return;
     startX = event.clientX;
@@ -69,6 +100,7 @@ export function createControls(onToggle: () => void, onRetry: () => void, onSett
   });
   ball.addEventListener('click', () => {
     if (moved) { moved = false; return; }
+    closeMenu();
     onToggle();
   });
   return {
@@ -91,6 +123,7 @@ export function createControls(onToggle: () => void, onRetry: () => void, onSett
         root.classList.remove('mt-notice');
         status.textContent = statusText;
       }, durationMs);
-    }
+    },
+    setHidden(hidden) { closeMenu(); root.classList.toggle('mt-hidden', hidden); }
   };
 }
