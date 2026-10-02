@@ -275,6 +275,19 @@ try {
     assert.equal(facts.current, 1, 'the current text is translated once');
   });
 
+  await check('large page: first batch latency on about 10,000 nodes', async () => {
+    await open('/large.html');
+    await until('document.documentElement.dataset.requests !== undefined || document.querySelectorAll(".mt-translation").length > 0', 'first batch dispatched');
+    const facts = await evaluate(`(() => ({
+      nodes: Number(document.documentElement.dataset.nodes),
+      firstBatchMs: Math.round(window.firstBatch - window.start),
+      translations: document.querySelectorAll('.mt-translation').length
+    }))()`);
+    assert.ok(facts.nodes > 8000, `the fixture should hold a large DOM, saw ${facts.nodes} nodes`);
+    assert.ok(facts.firstBatchMs >= 0 && facts.firstBatchMs < 3000, `first batch took ${facts.firstBatchMs}ms`);
+    console.log(`     ${facts.nodes} nodes, first batch dispatched after ${facts.firstBatchMs}ms`);
+  });
+
   await check('selection: right-click entry point, limits, cancellation and no page requests', async () => {
     await open('/selection.html');
     await evaluate(`window.selectionMessage({ text: 'Overview', editable: false, frameOk: true })`);

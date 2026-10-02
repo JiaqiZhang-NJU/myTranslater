@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Atlas large page sample</title>
+  <link rel="stylesheet" href="/content.css">
+</head>
+<body>
+  <script>
+    // About 10,000 nodes: ordinary cards plus decorative icon placeholders that
+    // stay outside the extraction result, used to record how long the first
+    // extraction and the first dispatched batch take.
+    const main = document.createElement('main');
+    const heading = document.createElement('h1');
+    heading.textContent = 'Atlas release notes';
+    main.append(heading);
+    for (let index = 0; index < 900; index++) {
+      const card = document.createElement('div');
+      card.className = 'card';
+      const label = document.createElement('span');
+      label.className = 'label';
+      label.textContent = 'Item ' + index;
+      const paragraph = document.createElement('p');
+      paragraph.textContent = 'Release ' + index + ' describes how the pipeline behaves under load and what the operator should check.';
+      card.append(label, paragraph);
+      for (let icon = 0; icon < 7; icon++) {
+        const glyph = document.createElement('span');
+        glyph.className = 'icon';
+        glyph.setAttribute('aria-hidden', 'true');
+        card.append(glyph);
+      }
+      main.append(card);
+    }
+    document.body.append(main);
+    document.documentElement.dataset.nodes = String(document.getElementsByTagName('*').length);
+  </script>
+  <script>
+    window.start = 0;
+    window.firstBatch = 0;
+    window.requests = 0;
+    window.chrome = { runtime: {
+      id: 'smoke-extension',
+      onMessage: { addListener: listener => { window.toggleFromToolbar = () => listener({ type: 'TOGGLE_TRANSLATION' }, { id: 'smoke-extension' }, () => {}); } },
+      sendMessage: async message => {
+        if (message.type === 'GET_PROVIDER_STATUS') return { ok: true, ready: true, provider: 'ollama', identity: 'ollama:mock:v1', settingsVersion: 1 };
+        if (message.type === 'TRANSLATE') {
+          window.requests++;
+          if (!window.firstBatch) window.firstBatch = performance.now();
+          document.documentElement.dataset.requests = String(window.requests);
+          return { ok: true, usage: { totalTokens: 10 }, translations: message.batch.groups.flatMap(group => group.blocks.map(block => ({ id: block.id, text: '译文：' + block.text }))) };
+        }
+        return { ok: true };
+      }
+    } };
+  </script>
+  <script src="/content.js"></script>
+  <script>
+    setTimeout(() => { window.start = performance.now(); window.toggleFromToolbar(); }, 100);
+  </script>
+</body>
+</html>
