@@ -1,6 +1,9 @@
 const marker = /⟦(\/?)i(\d+)⟧/g;
 const inlineTags = new Set(['A', 'STRONG', 'EM', 'B', 'I']);
-const skipped = 'script,style,noscript,pre,code,textarea,input,select,[contenteditable],[translate="no"],[aria-hidden="true"],[hidden],template,.mt-translation,#mt-controls';
+// This list must match the extraction rule in `content/extract.ts`: only a
+// declared editable region is skipped, so a stand-alone
+// `contenteditable="false"` element is still ordinary read-only content.
+const skipped = 'script,style,noscript,pre,code,textarea,input,select,[contenteditable]:not([contenteditable="false"]):not([contenteditable="inherit"]),[translate="no"],[aria-hidden="true"],[hidden],template,.mt-translation,#mt-controls,#mt-selection';
 
 export function withoutInlineMarkers(text: string): string {
   return text.replace(marker, '').replace(/\s+/g, ' ').trim();
@@ -12,13 +15,14 @@ export interface InlineSource {
   signature: string;
 }
 
-export function extractInline(element: Element): InlineSource {
+export function extractInline(element: Element, stop?: (node: Element) => boolean): InlineSource {
   const parts: string[] = [];
   const elements = new Map<string, Element>();
   let index = 0;
   function walk(node: Node): void {
     if (node.nodeType === Node.TEXT_NODE) { parts.push(node.textContent ?? ''); return; }
     if (!(node instanceof Element) || node.closest(skipped)) return;
+    if (node !== element && stop?.(node)) return;
     if (node !== element && element.matches('li,td,th') && node.matches(element.matches('li') ? 'li' : 'td,th')) return;
     const style = getComputedStyle(node);
     if (style.display === 'none' || style.visibility === 'hidden') return;

@@ -13,6 +13,7 @@
       <strong>悬浮球在哪里？</strong>
       <p>这里是设置页，不显示悬浮球。保存后打开或刷新一个普通网页（例如 <a href="https://example.com/" target="_blank" rel="noopener noreferrer">示例网页</a>），在右下角点击“译”。也可以在网页中点击浏览器工具栏上的 myTranslater 图标开始翻译。</p>
       <p>如果仍看不到，请检查扩展的“网站访问权限”，允许在该网站运行，再刷新网页。浏览器内部页面（如 chrome://）不支持注入悬浮球。</p>
+      <p>只想翻译一小段文字时，选中网页上的文字，点右键选择「用 myTranslater 翻译所选文字」。这个入口不需要先开启整页翻译。</p>
     </div>
     <form id="settings">
       <fieldset class="provider-choice">
@@ -53,7 +54,8 @@
     <section>
       <h2>发送内容与费用</h2>
       <p>点击悬浮球后，插件会把当前页面的标题、待翻译文本和少量章节信息发送给所选方式。DeepSeek 请求可能产生 API 费用；Ollama 请求发往本机服务，占用本机算力。连接测试会发送一个固定的简短样例。已经发出的 DeepSeek 请求即使取消，仍可能计费。</p>
-      <p>当前开发版支持标题、段落、列表、导航、按钮和具有明确表头的简单表格，并可跟进页面动态新增的内容。合并单元格、复杂网格、图片、PDF、iframe 和 Shadow DOM 暂不支持。扩展申请网站读取权限以显示悬浮球和读取需要翻译的文本。</p>
+      <p>使用划词翻译时，插件会把选中的文字、页面标题，以及选区附近最多约 120 个字符的可见语境发送给所选方式。输入框、密码框、可编辑区域和子框架内的选区不会被发送；超过 2,000 字时会先提示缩小选区，不会静默截断。划词结果只显示在页面内的小面板里，不会改动网页内容。</p>
+      <p>当前开发版支持标题、段落、列表、普通导航（原生导航、面包屑、分页、标签页、菜单和自定义导航容器）、按钮、label/summary/caption 标签，以及具有明确表头的简单表格，并可跟进页面动态新增的内容。合并单元格、复杂网格、图片、PDF、iframe 和 Shadow DOM 暂不支持。整页翻译与划词翻译共用同一份本页预算。扩展申请网站读取权限以显示悬浮球并读取需要翻译的文本。</p>
     </section>
     <footer>项目地址：<a href="https://github.com/JiaqiZhang-NJU/myTranslater" target="_blank" rel="noopener noreferrer">GitHub · myTranslater</a></footer>
   </main>

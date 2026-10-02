@@ -24,6 +24,10 @@ test('background keeps provider selection and key separate, and rejects stale se
   });
   let handler: ((message: unknown, sender: chrome.runtime.MessageSender, respond: (response: any) => void) => boolean) | undefined;
   let actionHandler: ((tab: chrome.tabs.Tab) => void) | undefined;
+  let contextMenuHandler: ((info: chrome.contextMenus.OnClickData, tab?: chrome.tabs.Tab) => void) | undefined;
+  let installedHandler: (() => void) | undefined;
+  const createdMenus: { id?: string; title?: string; contexts?: string[] }[] = [];
+  const badge = new Map<number, string>();
   let openOptionsCount = 0;
   let sentToTab: { tabId: number; message: unknown } | undefined;
   let contentScriptAvailable = true;
@@ -32,9 +36,19 @@ test('background keeps provider selection and key separate, and rejects stale se
     runtime: {
       id: 'test-extension', getURL: (path: string) => `chrome-extension://test-extension/${path}`,
       onMessage: { addListener: (fn: typeof handler) => { handler = fn; } },
+      onInstalled: { addListener: (fn: typeof installedHandler) => { installedHandler = fn; } },
       openOptionsPage: async () => { openOptionsCount++; }
     },
-    action: { onClicked: { addListener: (fn: typeof actionHandler) => { actionHandler = fn; } } },
+    action: {
+      onClicked: { addListener: (fn: typeof actionHandler) => { actionHandler = fn; } },
+      setBadgeText: async ({ tabId, text }: { tabId: number; text: string }) => { badge.set(tabId, text); },
+      setTitle: async () => {}
+    },
+    contextMenus: {
+      removeAll: (callback: () => void) => { createdMenus.length = 0; callback(); },
+      create: (item: { id?: string; title?: string; contexts?: string[] }) => { createdMenus.push(item); },
+      onClicked: { addListener: (fn: typeof contextMenuHandler) => { contextMenuHandler = fn; } }
+    },
     tabs: { sendMessage: async (tabId: number, message: unknown) => {
       if (!contentScriptAvailable) throw new Error('No receiving content script');
       sentToTab = { tabId, message };
@@ -48,6 +62,10 @@ test('background keeps provider selection and key separate, and rejects stale se
     const { loadSettings, saveSettings } = await import('../src/options-service.ts');
     assert.ok(handler);
     assert.ok(actionHandler);
+    assert.deepEqual(createdMenus, [{ id: 'mt-translation-selection', title: '用 myTranslater 翻译所选文字', contexts: ['selection'] }]);
+    installedHandler?.();
+    assert.equal(createdMenus.length, 1);
+    assert.ok(contextMenuHandler);
     actionHandler({ id: 7 } as chrome.tabs.Tab);
     await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(sentToTab, { tabId: 7, message: { type: 'TOGGLE_TRANSLATION' } });
@@ -56,6 +74,22 @@ test('background keeps provider selection and key separate, and rejects stale se
     actionHandler({ id: 8 } as chrome.tabs.Tab);
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(openOptionsCount, 1);
+    contextMenuHandler!({ menuItemId: 'mt-translation-selection', selectionText: 'Overview', editable: false, frameId: 0 } as chrome.contextMenus.OnClickData, { id: 8 } as chrome.tabs.Tab);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(badge.get(8), '!');
+    contentScriptAvailable = true;
+    sentToTab = undefined;
+    contextMenuHandler!({ menuItemId: 'mt-translation-selection', selectionText: 'Overview', editable: false, frameId: 0 } as chrome.contextMenus.OnClickData, { id: 7 } as chrome.tabs.Tab);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(sentToTab, { tabId: 7, message: { type: 'MT_SELECTION', text: 'Overview', editable: false, frameOk: true } });
+    sentToTab = undefined;
+    contextMenuHandler!({ menuItemId: 'mt-translation-selection', selectionText: 'sum', editable: true, frameId: 3 } as chrome.contextMenus.OnClickData, { id: 7 } as chrome.tabs.Tab);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(sentToTab, { tabId: 7, message: { type: 'MT_SELECTION', text: 'sum', editable: true, frameOk: false } });
+    sentToTab = undefined;
+    contextMenuHandler!({ menuItemId: 'unrelated', selectionText: 'Overview' } as chrome.contextMenus.OnClickData, { id: 7 } as chrome.tabs.Tab);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(sentToTab, undefined);
     const optionsSender = { id: 'test-extension', url: 'chrome-extension://test-extension/options.html', tab: { id: 42 } } as chrome.runtime.MessageSender;
     const tabSender = { id: 'test-extension', url: 'https://example.com/', tab: { id: 7 } } as chrome.runtime.MessageSender;
     const send = (message: unknown, sender: chrome.runtime.MessageSender) => new Promise<any>(resolve => handler!(message, sender, resolve));
@@ -81,6 +115,38 @@ test('background keeps provider selection and key separate, and rejects stale se
     const translated = await send({ type: 'TRANSLATE', sessionId: 'session1', settingsVersion: 1, batch }, tabSender);
     assert.equal(translated.ok, true);
     assert.equal(translated.usage.totalTokens, 50);
+    // A user selection waits for the page batch on the same tab and can still
+    // be cancelled before it ever reaches the provider.
+    let releaseSlow: (() => void) | undefined;
+    globalThis.fetch = () => new Promise(resolve => {
+      releaseSlow = () => resolve(new Response(JSON.stringify({ done: true, done_reason: 'stop', message: { content: JSON.stringify({ translations: [
+        { id: 'b1', text: '项目简介' }, { id: 'b2', text: 'Atlas 是一个工具。' }
+      ] }) }, prompt_eval_count: 10, eval_count: 5 }), { status: 200 }));
+    });
+    const slow = send({ type: 'TRANSLATE', sessionId: 'slow-page', settingsVersion: 1, batch }, tabSender);
+    await new Promise(resolve => setImmediate(resolve));
+    let selectionFetches = 0;
+    const selectionBatch: TranslationBatch = { pageTitle: 'Atlas', targetLang: 'zh-CN', mode: 'selection',
+      groups: [{ id: 'gsel', blocks: [{ id: 'sel', role: 'paragraph', text: 'About' }] }] };
+    globalThis.fetch = async () => {
+      selectionFetches++;
+      return new Response(JSON.stringify({ done: true, done_reason: 'stop', message: { content: JSON.stringify({ translations: [{ id: 'sel', text: '关于' }] }) },
+        prompt_eval_count: 20, eval_count: 4 }), { status: 200 });
+    };
+    const queued = send({ type: 'TRANSLATE', sessionId: 'sel-1', settingsVersion: 1, batch: selectionBatch }, tabSender);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(selectionFetches, 0);
+    await send({ type: 'CANCEL', sessionId: 'sel-1' }, tabSender);
+    releaseSlow!();
+    assert.equal((await slow).ok, true);
+    const cancelledSelection = await queued;
+    assert.equal(cancelledSelection.ok, false);
+    assert.equal(cancelledSelection.kind, 'cancelled');
+    assert.equal(selectionFetches, 0);
+    const forwarded = await send({ type: 'TRANSLATE', sessionId: 'sel-2', settingsVersion: 1, batch: selectionBatch }, tabSender);
+    assert.equal(forwarded.ok, true);
+    assert.deepEqual(forwarded.translations, [{ id: 'sel', text: '关于' }]);
+    assert.equal(selectionFetches, 1);
     const localBudgetBefore = (session.get('budget:7:ollama') as { used: number }).used;
     const oneBlock: TranslationBatch = { ...batch, groups: [{ ...batch.groups[0], blocks: [batch.groups[0].blocks[0]] }] };
     globalThis.fetch = async () => new Response(JSON.stringify({ done: true, done_reason: 'stop', message: { content: JSON.stringify({ translations: [{ id: 'wrong', text: '关于' }] }) } }), { status: 200 });

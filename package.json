@@ -1,12 +1,14 @@
 {
   "name": "mytranslater",
-  "version": "0.3.5",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node scripts/test.mjs"
+    "test": "node scripts/test.mjs",
+    "test:browser": "node scripts/browser-checks.mjs",
+    "test:install": "node scripts/install-checks.mjs"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.323",

@@ -23,6 +23,26 @@ test('cache identity changes when section context changes', () => {
   assert.notEqual(cacheKey('Example', group, 'deepseek:v1'), cacheKey('Example', { ...group, blocks: [{ ...group.blocks[0], context: 'navigation' }, group.blocks[1]] }, 'deepseek:v1'));
 });
 
+test('selection requests accept one short block while page requests keep the two-character floor', () => {
+  const selection = (text: string, extra: Partial<TranslationBatch> = {}): Record<string, unknown> => ({
+    pageTitle: 'Atlas', targetLang: 'zh-CN', mode: 'selection',
+    groups: [{ id: 'gsel', blocks: [{ id: 'sel', role: 'paragraph', text }] }],
+    ...extra
+  });
+  assert.equal(isTranslationBatch(selection('A')), true);
+  assert.equal(isTranslationBatch({ pageTitle: 'Atlas', targetLang: 'zh-CN', groups: [{ id: 'gsel', blocks: [{ id: 'sel', role: 'paragraph', text: 'A' }] }] }), false);
+  assert.equal(isTranslationBatch(selection(' ')), false);
+  assert.equal(isTranslationBatch(selection('x'.repeat(2001))), false);
+  assert.equal(isTranslationBatch(selection('x'.repeat(2000))), true);
+  assert.equal(isTranslationBatch(selection('About', {
+    groups: [
+      { id: 'gsel', blocks: [{ id: 'a', role: 'paragraph', text: 'About' }] },
+      { id: 'gsel2', blocks: [{ id: 'b', role: 'paragraph', text: 'Matches' }] }
+    ]
+  } as Partial<TranslationBatch>)), false);
+  assert.equal(isTranslationBatch({ ...selection('About'), mode: 'page' }), false);
+});
+
 test('inline link and emphasis markers must survive translation once and remain nested', () => {
   const source = 'Read ⟦i1⟧the ⟦i2⟧guide⟦/i2⟧⟦/i1⟧';
   assert.equal(validInlineMarkers(source, '阅读⟦i1⟧这份⟦i2⟧指南⟦/i2⟧⟦/i1⟧'), true);

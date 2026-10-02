@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Event page for selection</title>
+  <link rel="stylesheet" href="/content.css">
+</head>
+<body>
+  <main>
+    <h1>VALORANT Champions 2026</h1>
+    <p id="line">The final stage begins this weekend in Seoul.</p>
+  </main>
+  <script>
+    window.requests = [];
+    window.selectionRequests = [];
+    window.cancels = [];
+    window.chrome = { runtime: {
+      id: 'smoke-extension',
+      onMessage: { addListener: listener => {
+        window.toggleFromToolbar = () => listener({ type: 'TOGGLE_TRANSLATION' }, { id: 'smoke-extension' }, () => {});
+        window.selectionMessage = data => listener(Object.assign({ type: 'MT_SELECTION' }, data), { id: 'smoke-extension' }, () => {});
+      } },
+      sendMessage: async message => {
+        if (message.type === 'GET_PROVIDER_STATUS') return { ok: true, ready: true, provider: 'deepseek', identity: 'deepseek:deepseek-flash:v1', settingsVersion: 3 };
+        if (message.type === 'CANCEL') { window.cancels.push(message.sessionId); return { ok: true }; }
+        if (message.type === 'TRANSLATE') {
+          if (message.batch.mode === 'selection') {
+            window.selectionRequests.push(message.batch);
+            if (message.batch.groups[0].blocks[0].text === 'Slow selection') await new Promise(resolve => setTimeout(resolve, 800));
+            return { ok: true, usage: { totalTokens: 12 }, translations: message.batch.groups.flatMap(group => group.blocks.map(block => ({ id: block.id, text: '划词译文：' + block.text }))) };
+          }
+          window.requests.push(message.batch);
+          return { ok: true, usage: { totalTokens: 10 }, translations: message.batch.groups.flatMap(group => group.blocks.map(block => ({ id: block.id, text: '译文：' + block.text }))) };
+        }
+        return { ok: true };
+      }
+    } };
+  </script>
+  <script src="/content.js"></script>
+</body>
+</html>

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Atlas race sample</title>
+  <link rel="stylesheet" href="/content.css">
+</head>
+<body>
+  <main>
+    <h1>Release status</h1>
+    <div id="updates"></div>
+    <div id="bottom">Stable section text.</div>
+  </main>
+  <script>
+    window.requests = [];
+    window.chrome = { runtime: {
+      id: 'smoke-extension',
+      onMessage: { addListener: listener => { window.toggleFromToolbar = () => listener({ type: 'TOGGLE_TRANSLATION' }, { id: 'smoke-extension' }, () => {}); } },
+      sendMessage: async message => {
+        if (message.type === 'GET_PROVIDER_STATUS') return { ok: true, ready: true, provider: 'ollama', identity: 'ollama:mock:v1', settingsVersion: 1 };
+        if (message.type === 'TRANSLATE') {
+          window.requests.push(message.batch);
+          document.documentElement.dataset.requestCount = String(window.requests.length);
+          if (message.batch.groups.some(group => group.blocks.some(block => block.text === 'Slow old text.'))) {
+            await new Promise(resolve => setTimeout(resolve, 1200));
+          }
+          return { ok: true, usage: { totalTokens: 10 }, translations: message.batch.groups.flatMap(group => group.blocks.map(block => ({ id: block.id, text: '译文：' + block.text }))) };
+        }
+        return { ok: true };
+      }
+    } };
+    const paragraph = document.createElement('p');
+    paragraph.id = 'raced';
+    paragraph.textContent = 'Slow old text.';
+    document.querySelector('#updates').append(paragraph);
+    setTimeout(() => { paragraph.textContent = 'Current new text.'; }, 250);
+    setTimeout(() => window.toggleFromToolbar(), 60);
+  </script>
+  <script src="/content.js"></script>
+</body>
+</html>

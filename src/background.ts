@@ -5,6 +5,10 @@ import { TranslationError } from './translation';
 const MAX_ACTIVE = 2;
 const controllers = new Map<string, Set<AbortController>>();
 const budgetSerial = new Map<number, Promise<void>>();
+const tabSerial = new Map<number, Promise<unknown>>();
+/** Sessions cancelled while queued, so a waiting request never starts. */
+const cancelled = new Map<string, number>();
+const SELECTION_MENU_ID = 'mt-translation-selection';
 let active = 0;
 const waiters: { resolve: () => void; reject: (error: Error) => void; signal: AbortSignal }[] = [];
 const storageReady = chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
@@ -47,6 +51,24 @@ function release(): void {
 
 function sessionKey(tabId: number, sessionId: string): string { return `${tabId}:${sessionId}`; }
 
+/** At most one provider call per tab; a waiting request keeps FIFO order. */
+function withTabSlot<T>(tabId: number, operation: () => Promise<T>): Promise<T> {
+  const prior = tabSerial.get(tabId) ?? Promise.resolve();
+  const next = prior.then(operation, operation);
+  const tail = next.then(() => undefined, () => undefined);
+  tabSerial.set(tabId, tail);
+  void tail.then(() => { if (tabSerial.get(tabId) === tail) tabSerial.delete(tabId); });
+  return next;
+}
+
+function markCancelled(identity: string): void {
+  cancelled.set(identity, Date.now());
+  if (cancelled.size > 500) {
+    const oldest = [...cancelled].sort((a, b) => a[1] - b[1]).slice(0, cancelled.size - 500);
+    for (const [key] of oldest) cancelled.delete(key);
+  }
+}
+
 interface TabBudget { documentId: string; used: number; inFlight: number; limit: number }
 
 async function withBudget<T>(tabId: number, operation: () => Promise<T>): Promise<T> {
@@ -88,41 +110,48 @@ async function settleBudget(tabId: number, documentId: string, provider: 'deepse
 }
 
 async function translateFromTab(tabId: number, documentId: string, sessionId: string, settingsVersion: number, batch: TranslationBatch) {
-  await storageReady;
-  const settings = await providerSettings();
-  if (settings.version !== settingsVersion) throw new TranslationError('翻译方式已更新，请重新开启本页翻译', 'config');
-  const key = settings.provider === 'deepseek' ? await apiKey() : '';
-  if (settings.provider === 'deepseek' && !key) throw new TranslationError('请先在设置中填写 DeepSeek API Key', 'key');
-  if (settings.provider === 'ollama' && !settings.ollamaModel) throw new TranslationError('请先选择 Ollama 本机模型', 'config');
   const identity = sessionKey(tabId, sessionId);
-  const cost = Math.ceil(JSON.stringify(batch).length / 2) + 2048;
-  await budget(tabId, documentId, settings.provider, cost);
-  const controller = new AbortController();
-  const set = controllers.get(identity) ?? new Set<AbortController>();
-  set.add(controller);
-  controllers.set(identity, set);
-  let acquired = false;
-  let requestStarted = false;
-  let actualCost = 0;
-  try {
-    await acquire(controller.signal);
-    acquired = true;
-    requestStarted = true;
-    const result = await translateConfigured(settings, key, batch, controller.signal);
-    if ((await providerSettings()).version !== settingsVersion) throw new TranslationError('翻译方式已更新，请重新开启本页翻译', 'config');
-    actualCost = result.usage?.totalTokens ?? cost;
-    return { ok: true as const, ...result };
-  } catch (error) {
-    // A failed cloud request may still be billed; retain its estimate only if
-    // the provider call began. Failed local requests consume no API budget.
-    if (requestStarted && settings.provider === 'deepseek') actualCost = cost;
-    throw error;
-  } finally {
-    if (acquired) release();
-    set.delete(controller);
-    if (!set.size) controllers.delete(identity);
-    await settleBudget(tabId, documentId, settings.provider, cost, actualCost);
-  }
+  if (cancelled.delete(identity)) throw new TranslationError('已取消', 'cancelled');
+  return withTabSlot(tabId, async () => {
+    await storageReady;
+    if (cancelled.delete(identity)) throw new TranslationError('已取消', 'cancelled');
+    const settings = await providerSettings();
+    if (settings.version !== settingsVersion) throw new TranslationError('翻译方式已更新，请重新开启本页翻译', 'config');
+    const key = settings.provider === 'deepseek' ? await apiKey() : '';
+    if (settings.provider === 'deepseek' && !key) throw new TranslationError('请先在设置中填写 DeepSeek API Key', 'key');
+    if (settings.provider === 'ollama' && !settings.ollamaModel) throw new TranslationError('请先选择 Ollama 本机模型', 'config');
+    // A short selection needs far less completion room than a full page batch.
+    const reserve = batch.mode === 'selection' ? 512 : 2048;
+    const cost = Math.ceil(JSON.stringify(batch).length / 2) + reserve;
+    await budget(tabId, documentId, settings.provider, cost);
+    const controller = new AbortController();
+    const set = controllers.get(identity) ?? new Set<AbortController>();
+    set.add(controller);
+    controllers.set(identity, set);
+    let acquired = false;
+    let requestStarted = false;
+    let actualCost = 0;
+    try {
+      await acquire(controller.signal);
+      acquired = true;
+      requestStarted = true;
+      const result = await translateConfigured(settings, key, batch, controller.signal);
+      if ((await providerSettings()).version !== settingsVersion) throw new TranslationError('翻译方式已更新，请重新开启本页翻译', 'config');
+      actualCost = result.usage?.totalTokens ?? cost;
+      return { ok: true as const, ...result };
+    } catch (error) {
+      // A failed cloud request may still be billed; retain its estimate only if
+      // the provider call began. Failed local requests consume no API budget.
+      if (requestStarted && settings.provider === 'deepseek') actualCost = cost;
+      throw error;
+    } finally {
+      if (acquired) release();
+      set.delete(controller);
+      if (!set.size) controllers.delete(identity);
+      cancelled.delete(identity);
+      await settleBudget(tabId, documentId, settings.provider, cost, actualCost);
+    }
+  });
 }
 
 async function handle(message: unknown, sender: chrome.runtime.MessageSender) {
@@ -141,6 +170,7 @@ async function handle(message: unknown, sender: chrome.runtime.MessageSender) {
     if (data.type === 'OPEN_OPTIONS') { await chrome.runtime.openOptionsPage(); return { ok: true }; }
     if (data.type === 'CANCEL' && typeof data.sessionId === 'string' && /^[\w-]{1,80}$/.test(data.sessionId)) {
       const identity = sessionKey(tabId, data.sessionId);
+      markCancelled(identity);
       for (const controller of controllers.get(identity) ?? []) controller.abort();
       return { ok: true };
     }
@@ -169,4 +199,45 @@ chrome.action.onClicked.addListener(tab => {
   if (tab.id === undefined) { void chrome.runtime.openOptionsPage(); return; }
   void chrome.tabs.sendMessage(tab.id, { type: 'TOGGLE_TRANSLATION' })
     .catch(() => chrome.runtime.openOptionsPage());
+});
+
+/**
+ * The selection entry point uses the browser's own context menu. Registration
+ * is idempotent so installs, updates and service-worker wakeups cannot stack
+ * duplicate items; the menu never repeats the selected text.
+ */
+function registerSelectionMenu(): void {
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({
+      id: SELECTION_MENU_ID,
+      title: '用 myTranslater 翻译所选文字',
+      contexts: ['selection']
+    });
+  });
+}
+
+registerSelectionMenu();
+chrome.runtime.onInstalled.addListener(registerSelectionMenu);
+
+async function openSelection(tabId: number, info: chrome.contextMenus.OnClickData): Promise<void> {
+  const text = typeof info.selectionText === 'string' ? info.selectionText : '';
+  const action = chrome.action;
+  const payload = { type: 'MT_SELECTION', text, editable: info.editable === true, frameOk: (info.frameId ?? 0) === 0 };
+  try {
+    await chrome.tabs.sendMessage(tabId, payload, { frameId: 0 });
+  } catch {
+    // No receiver: the page was never injected (browser page, store page) or
+    // site access is blocked. Say so through the toolbar instead of silence.
+    await action.setBadgeText({ tabId, text: '!' });
+    await action.setTitle({ tabId, title: 'myTranslater 未在此页就绪：请刷新页面或检查网站访问权限' });
+    setTimeout(() => {
+      void action.setBadgeText({ tabId, text: '' });
+      void action.setTitle({ tabId, title: '翻译当前网页' });
+    }, 6000);
+  }
+}
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId !== SELECTION_MENU_ID || tab?.id === undefined) return;
+  void openSelection(tab.id, info);
 });
