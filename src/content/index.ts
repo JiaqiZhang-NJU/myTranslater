@@ -1,13 +1,19 @@
 import type { TextBlock, TextGroup, TranslationBatch, TranslationResult } from '../shared';
+import { pageUrlIdentity } from '../shared';
 import { makeBatches, cacheKey } from './context';
 import { extractPage, navigationFor, ownedTextOf, prioritize, type PageGroup } from './extract';
 import { createControls } from './floating-ball';
-import { renderTranslation, clearTranslation, clearTranslations } from './render';
+import { renderTranslation, clearTranslation, clearTranslations, scheduleLayoutCheck, restrictedCount } from './render';
 import { createSelectionPanel, type SelectionOutcome, type SelectionRequest } from './selection';
+import type { BudgetSnapshot } from '../budget';
+import { closestComposed, containsComposed, parentElement, OWNED_SELECTOR, type ScanRoot } from '../dom';
+import { RootObserver } from './roots';
+import { PageCache } from './cache';
 
 interface RuntimeResponse extends Partial<TranslationResult> {
   ok: boolean; error?: string; kind?: string; ready?: boolean; message?: string; identity?: string; settingsVersion?: number;
   provider?: 'deepseek' | 'ollama';
+  budget?: BudgetSnapshot;
 }
 
 if (window.top === window && document.body) {
@@ -24,21 +30,21 @@ if (window.top === window && document.body) {
   let providerName = 'DeepSeek';
   let settingsVersion = 0;
   let tokenTotal = 0;
-  let observer: MutationObserver | null = null;
+  let observer: RootObserver | null = null;
   let scanTimer: number | undefined;
-  let mainRoot: Element | null = null;
   let idleWaiters: (() => void)[] = [];
-  const dirtyScopes = new Set<Element>();
+  const dirtyScopes = new Set<ScanRoot>();
   const groups = new Map<string, PageGroup>();
   const pending = new Set<string>();
   const translated = new Set<string>();
-  const cache = new Map<string, Map<string, string>>();
-  let cacheChars = 0;
-  const blockCache = new Map<string, string>();
-  let blockChars = 0;
+  const cache = new PageCache<string[]>(1000, 2_500_000);
+  const blockCache = new PageCache<string>(4000, 2_000_000);
   /** Bounded cache for repeated identical selections on this document. */
-  const selectionCache = new Map<string, string>();
-  const controls = createControls(toggle, retry, () => { void chrome.runtime.sendMessage({ type: 'OPEN_OPTIONS' }); }, pauseOrResume, hideForPage);
+  const selectionCache = new PageCache<string>(50, 200_000);
+  let budgetInfo: BudgetSnapshot | undefined;
+  const cancelledSelections = new Set<string>();
+  const controls = createControls(toggle, retry, () => { void chrome.runtime.sendMessage({ type: 'OPEN_OPTIONS' }); }, pauseOrResume, hideForPage,
+    () => { stop(); forgetAll(); selectionCache.clear(); selection.close(); void start(); });
 
   function label(provider?: 'deepseek' | 'ollama'): string {
     if (provider) providerName = provider === 'ollama' ? 'Ollama 本机模型' : 'DeepSeek API';
@@ -48,7 +54,9 @@ if (window.top === window && document.body) {
   function status(message = ''): void {
     const total = [...groups.values()].reduce((sum, group) => sum + group.group.blocks.length, 0);
     const done = [...translated].reduce((sum, id) => sum + (groups.get(id)?.group.blocks.length ?? 0), 0);
-    controls.setStatus(message || (paused ? `已暂停 · ${done}/${total} · ${tokenTotal} token` : active ? `已翻译 ${done}/${total} · ${tokenTotal} token` : '点击悬浮球翻译当前页'));
+    const usage = budgetInfo ? `${budgetInfo.used}${budgetInfo.enabled ? `/${budgetInfo.limit} token` : ' token · 未限制'}${budgetInfo.inFlight ? ` · 预留 ${budgetInfo.inFlight}` : ''}` : `${tokenTotal} token`;
+    const floating = restrictedCount();
+    controls.setStatus(message ? `${message}${budgetInfo ? ` · ${usage}` : ''}` : (paused ? `已暂停 · ${done}/${total} · ${usage}` : active ? `已翻译 ${done}/${total} · ${usage}${floating ? ` · ${floating} 处浮层` : ''}` : '点击悬浮球翻译当前页'));
   }
 
   function same(a: PageGroup, b: PageGroup): boolean {
@@ -65,14 +73,35 @@ if (window.top === window && document.body) {
     translated.delete(group.group.id);
   }
 
-  function scan(root: Element): void {
+  function scan(root: ScanRoot): void {
     if (!active) return;
+    if (root instanceof ShadowRoot) root = root.host;
+    // A component can move the same text into a new inner owner. Include all
+    // owners of an affected group so an incremental scan cannot leave the old
+    // host translation alongside the new paragraph or split a heading group.
+    let expanded: boolean;
+    do {
+      expanded = false;
+      for (const group of groups.values()) {
+        const touches = [...group.nodes.values()].some(node => containsComposed(root, node)) ||
+          [...group.textNodes.values()].some(nodes => nodes.some(node => containsComposed(root, node)));
+        if (!touches) continue;
+        for (const node of group.nodes.values()) {
+          if (!node.isConnected) continue;
+          while (!containsComposed(root, node) && root !== document.body) {
+            const parent = parentElement(root);
+            if (!parent) break;
+            root = parent; expanded = true;
+          }
+        }
+      }
+    } while (expanded);
     const previousCount = groups.size;
     let changedCount = 0;
     const fresh = extractPage(root);
     const replacements = new Map(fresh.map(group => [group.group.id, group]));
     for (const [id, old] of groups) {
-      if (![...old.nodes.values()].some(node => !node.isConnected || root.contains(node))) continue;
+      if (![...old.nodes.values()].some(node => !node.isConnected || containsComposed(root, node))) continue;
       const next = replacements.get(id);
       if (!next || !same(old, next)) {
         removeTranslation(old);
@@ -94,15 +123,16 @@ if (window.top === window && document.body) {
     void process();
   }
 
-  function scopeFor(node: Node): Element {
-    const element = node instanceof Element ? node : node.parentElement;
+  function scopeFor(node: Node): ScanRoot {
+    if (node instanceof ShadowRoot) return node;
+    const element = node instanceof Element ? node : parentElement(node);
     if (!element) return document.body;
-    return navigationFor(element) ?? element.closest('table,ul,ol,section,article,main,footer') ?? element.parentElement ?? document.body;
+    return navigationFor(element) ?? closestComposed(element, 'table,ul,ol,section,article,main,footer') ?? element.parentElement ?? element.getRootNode() as ScanRoot;
   }
 
   function owned(node: Node): boolean {
     const element = node instanceof Element ? node : node.parentElement;
-    return Boolean(element?.closest('#mt-controls,.mt-translation,#mt-selection'));
+    return Boolean(element && closestComposed(element, OWNED_SELECTOR));
   }
 
   function changed(records: MutationRecord[]): void {
@@ -113,8 +143,11 @@ if (window.top === window && document.body) {
       if (record.type === 'childList' && [...record.addedNodes, ...record.removedNodes].every(owned)) continue;
       targets.add(record.target);
     }
+    if (targets.size) scheduleLayoutCheck();
     for (const target of targets) dirtyScopes.add(scopeFor(target));
-    if (!dirtyScopes.size) return;
+    if (dirtyScopes.size) scheduleScan();
+  }
+  function scheduleScan(): void {
     if (scanTimer !== undefined) clearTimeout(scanTimer);
     scanTimer = window.setTimeout(flushDirty, 800);
   }
@@ -123,7 +156,7 @@ if (window.top === window && document.body) {
     scanTimer = undefined;
     const scopes = [...dirtyScopes].filter(scope => scope.isConnected);
     dirtyScopes.clear();
-    const minimal = scopes.filter(scope => !scopes.some(other => other !== scope && other.contains(scope)));
+    const minimal = scopes.filter(scope => !scopes.some(other => other !== scope && containsComposed(other, scope)));
     for (const scope of minimal) scan(scope);
     for (const [id, group] of groups) {
       if ([...group.nodes.values()].some(node => !node.isConnected)) {
@@ -136,52 +169,32 @@ if (window.top === window && document.body) {
   }
 
   function saved(group: PageGroup): Map<string, string> | undefined {
-    const key = cacheKey(document.title, group.group, providerIdentity);
+    const key = groupCacheKey(group);
     const value = cache.get(key);
-    if (value) { cache.delete(key); cache.set(key, value); }
-    return value;
+    return value ? new Map(group.group.blocks.map((block, i) => [block.id, value[i]])) : undefined;
   }
 
   function remember(group: PageGroup, texts: Map<string, string>): void {
-    const key = cacheKey(document.title, group.group, providerIdentity);
-    if (!cache.has(key)) {
-      cache.set(key, texts);
-      cacheChars += key.length + [...texts.values()].reduce((sum, value) => sum + value.length, 0);
-      while (cache.size > 1000 || cacheChars > 2_500_000) {
-        const first = cache.keys().next().value;
-        if (!first) break;
-        const value = cache.get(first)!;
-        cacheChars -= first.length + [...value.values()].reduce((sum, text) => sum + text.length, 0);
-        cache.delete(first);
-      }
-    }
-    // Reusing single blocks keeps a changed group from resending the siblings
-    // that were already translated (for example one new navigation item).
+    cache.set(groupCacheKey(group), group.group.blocks.map(block => texts.get(block.id)!));
+    // Single-block entries retain the complete context supplied for the group.
     for (const block of group.group.blocks) {
       const value = texts.get(block.id);
       if (!value) continue;
-      const blockKey = blockCacheKey(block, group.group.section);
-      if (blockCache.has(blockKey)) { blockCache.delete(blockKey); blockCache.set(blockKey, value); continue; }
-      blockCache.set(blockKey, value);
-      blockChars += blockKey.length + value.length;
-      while (blockCache.size > 4000 || blockChars > 2_000_000) {
-        const first = blockCache.keys().next().value;
-        if (!first) break;
-        blockChars -= first.length + (blockCache.get(first)?.length ?? 0);
-        blockCache.delete(first);
-      }
+      blockCache.set(blockCacheKey(block, group), value);
     }
   }
 
-  function blockCacheKey(block: TextBlock, section?: string): string {
-    return cacheKey(document.title, section ? { id: 'blk', section, blocks: [block] } : { id: 'blk', blocks: [block] }, providerIdentity);
+  function groupCacheKey(group: PageGroup): string {
+    const signatures = group.group.blocks.map(block => [...(group.inline.get(block.id) ?? [])].map(([key, element]) => [key, element.tagName, element.getAttribute('href') ?? '']));
+    return JSON.stringify([cacheKey(document.title, group.group, providerIdentity), signatures]);
+  }
+  function blockCacheKey(block: TextBlock, group: PageGroup): string {
+    return `${groupCacheKey(group)}:${group.group.blocks.indexOf(block)}`;
   }
 
   function forgetAll(): void {
     cache.clear();
-    cacheChars = 0;
     blockCache.clear();
-    blockChars = 0;
   }
 
   function apply(group: PageGroup, texts: Map<string, string>): boolean {
@@ -189,7 +202,7 @@ if (window.top === window && document.body) {
     for (const block of group.group.blocks) {
       const node = group.nodes.get(block.id)!;
       const carrier = group.carriers.get(block.id) ?? node;
-      if (!renderTranslation(node, carrier, group.textNodes.get(block.id) ?? [], group.sources.get(block.id) ?? '', texts.get(block.id)!, block.role, group.inline.get(block.id) ?? new Map())) {
+      if (renderTranslation(node, carrier, group.textNodes.get(block.id) ?? [], group.sources.get(block.id) ?? '', texts.get(block.id)!, block.role, group.inline.get(block.id) ?? new Map()) === 'failed') {
         removeTranslation(group);
         return false;
       }
@@ -221,18 +234,18 @@ if (window.top === window && document.body) {
           if (!cached) continue;
           pending.delete(group.group.id);
           if (!apply(group, cached)) {
-            cache.delete(cacheKey(document.title, group.group, providerIdentity));
+            cache.delete(groupCacheKey(group));
             pending.add(group.group.id);
           }
         }
         const remaining = prioritize([...pending].map(id => groups.get(id)).filter((item): item is PageGroup => Boolean(item)));
-        if (!remaining.length) break;
+        if (!remaining.length) { status(); break; }
         const reuse = new Map<string, Map<string, string>>();
         const partial: TextGroup[] = [];
         for (const item of remaining) {
           const cached = new Map<string, string>();
           for (const block of item.group.blocks) {
-            const value = blockCache.get(blockCacheKey(block, item.group.section));
+            const value = blockCache.get(blockCacheKey(block, item));
             if (value) cached.set(block.id, value);
           }
           reuse.set(item.group.id, cached);
@@ -243,16 +256,17 @@ if (window.top === window && document.body) {
           if (apply(item, texts)) remember(item, texts);
           else {
             // Stale reused text must not be retried from the cache forever.
-            for (const block of item.group.blocks) blockCache.delete(blockCacheKey(block, item.group.section));
+            for (const block of item.group.blocks) blockCache.delete(blockCacheKey(block, item));
             pending.add(item.group.id);
           }
         }
-        if (!partial.length) continue;
+        if (!partial.length) { status(); continue; }
         const batch = makeBatches(document.title.slice(0, 180), partial)[0];
         if (!batch) break;
         const sent = new Map(batch.groups.map(item => [item.id, groups.get(item.id)!]));
         batch.groups.forEach(item => pending.delete(item.id));
         const thisSession = sessionId;
+        const requestUrl = pageUrlIdentity(location.href);
         let result: RuntimeResponse;
         try {
           result = await chrome.runtime.sendMessage({ type: 'TRANSLATE', sessionId: thisSession, settingsVersion, batch }) as RuntimeResponse;
@@ -264,6 +278,8 @@ if (window.top === window && document.body) {
           return;
         }
         if (!active || sessionId !== thisSession) return;
+        if (requestUrl !== pageUrlIdentity(location.href)) { syncPage(); return; }
+        if (batch.pageTitle !== document.title.slice(0, 180)) dirtyScopes.add(document.body);
         const unseen = observer?.takeRecords() ?? [];
         if (unseen.length) changed(unseen);
         if (dirtyScopes.size) {
@@ -273,7 +289,8 @@ if (window.top === window && document.body) {
         if (!result?.ok || !result.translations) {
           if (result?.kind !== 'cancelled') for (const id of sent.keys()) if (groups.has(id)) pending.add(id);
           blocked = true;
-          quotaBlocked = result?.kind === 'quota';
+          quotaBlocked = result?.kind === 'budget';
+          if (result?.budget) budgetInfo = result.budget;
           controls.setRetry(true);
           controls.setRetryLabel(quotaBlocked ? '增加预算并继续' : '重试');
           status(result?.error || '翻译失败，请手动重试');
@@ -281,6 +298,7 @@ if (window.top === window && document.body) {
           return;
         }
         tokenTotal += result.usage?.totalTokens ?? 0;
+        if (result.budget) budgetInfo = result.budget;
         const translations = new Map(result.translations.map(item => [item.id, item.text]));
         for (const [id, original] of sent) {
           const current = groups.get(id);
@@ -301,6 +319,7 @@ if (window.top === window && document.body) {
     try {
       const check = await chrome.runtime.sendMessage({ type: 'GET_PROVIDER_STATUS' }) as RuntimeResponse;
       if (check?.provider) label(check.provider);
+      if (check?.budget) { budgetInfo = check.budget; status(); }
       return check;
     } catch {
       return null;
@@ -308,6 +327,8 @@ if (window.top === window && document.body) {
   }
 
   async function translateSelection(request: SelectionRequest): Promise<SelectionOutcome> {
+    syncPage();
+    const revision = pageRevision;
     const check = await providerStatus();
     if (!check) return { ok: false, error: '扩展后台暂时不可用，请稍后重试', kind: 'unknown' };
     if (!check.ok || !check.ready || !check.identity || !Number.isSafeInteger(check.settingsVersion)) {
@@ -315,13 +336,12 @@ if (window.top === window && document.body) {
     }
     const block: TextBlock = { id: 'sel', role: 'paragraph', text: request.text, ...(request.context ? { context: request.context } : {}) };
     // The key contains the source text, the context actually used, the target
-    // language, the provider identity and its settings version, so a repeated
+    // language and the provider identity, so a repeated
     // word alone never hits a stale entry.
     const selectionKey = cacheKey(request.pageTitle, { id: 'gsel', blocks: [block] }, check.identity);
     const cached = selectionCache.get(selectionKey);
+    if (revision !== pageRevision || request.pageTitle !== document.title.slice(0, 180) || cancelledSelections.delete(request.sessionId)) return { ok: false, kind: 'cancelled', error: '已取消' };
     if (cached) {
-      selectionCache.delete(selectionKey);
-      selectionCache.set(selectionKey, cached);
       return { ok: true, translations: [{ id: 'sel', text: cached }], usage: null };
     }
     const batch: TranslationBatch = {
@@ -334,15 +354,13 @@ if (window.top === window && document.body) {
       const result = await chrome.runtime.sendMessage({
         type: 'TRANSLATE', sessionId: request.sessionId, settingsVersion: check.settingsVersion, batch
       }) as RuntimeResponse;
+      syncPage();
+      if (cancelledSelections.delete(request.sessionId) || revision !== pageRevision || request.pageTitle !== document.title.slice(0, 180)) return { ok: false, kind: 'cancelled', error: '已取消' };
+      if (result?.budget) { budgetInfo = result.budget; status(); }
       if (result?.ok && result.translations) {
         const text = result.translations[0]?.text;
         if (text) {
           selectionCache.set(selectionKey, text);
-          while (selectionCache.size > 50) {
-            const first = selectionCache.keys().next().value;
-            if (!first) break;
-            selectionCache.delete(first);
-          }
         }
         return { ok: true, translations: result.translations, usage: result.usage ?? null };
       }
@@ -354,7 +372,11 @@ if (window.top === window && document.body) {
 
   const selection = createSelectionPanel({
     translate: translateSelection,
-    cancel: session => { void chrome.runtime.sendMessage({ type: 'CANCEL', sessionId: session }).catch(() => {}); },
+    cancel: session => {
+      cancelledSelections.add(session);
+      if (cancelledSelections.size > 100) cancelledSelections.delete(cancelledSelections.values().next().value!);
+      void chrome.runtime.sendMessage({ type: 'CANCEL', sessionId: session }).catch(() => {});
+    },
     extendBudget: async () => {
       try {
         const result = await chrome.runtime.sendMessage({ type: 'EXTEND_BUDGET' }) as RuntimeResponse;
@@ -370,6 +392,7 @@ if (window.top === window && document.body) {
   });
 
   async function start(): Promise<void> {
+    syncPage();
     if (startingForPage === pageRevision || active) return;
     const requestedPage = pageRevision;
     startingForPage = requestedPage;
@@ -390,14 +413,13 @@ if (window.top === window && document.body) {
     blocked = false;
     quotaBlocked = false;
     sessionId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    tokenTotal = 0;
-    mainRoot = document.querySelector('main');
     controls.setActive(true);
     controls.setPaused(false);
     controls.setRetry(false);
-    observer = new MutationObserver(changed);
-    observer.observe(document.body, { childList: true, characterData: true, subtree: true, attributes: true,
-      attributeFilter: ['hidden', 'class', 'style', 'aria-hidden', 'role', 'scope', 'headers'] });
+    observer = new RootObserver(changed, root => { dirtyScopes.add(root); scheduleScan(); }, root => { dirtyScopes.add(root); scheduleScan(); },
+      { childList: true, characterData: true, subtree: true, attributes: true,
+        attributeFilter: ['hidden', 'class', 'style', 'aria-hidden', 'role', 'scope', 'headers', 'open', 'slot', 'name', 'translate', 'contenteditable', 'href'] });
+    dirtyScopes.clear();
     scan(document.body);
     if (!groups.size) status('当前页面没有可翻译内容；会继续等待新增内容');
   }
@@ -405,15 +427,14 @@ if (window.top === window && document.body) {
   function stop(): void {
     if (!active) return;
     const old = sessionId;
+    selection.close();
     active = false;
     sessionId = '';
-    observer?.disconnect();
+    observer?.stop();
     observer = null;
-    mainRoot = null;
     if (scanTimer !== undefined) clearTimeout(scanTimer);
     scanTimer = undefined;
     dirtyScopes.clear();
-    forgetAll();
     clearTranslations();
     groups.clear();
     pending.clear();
@@ -432,10 +453,12 @@ if (window.top === window && document.body) {
     hiddenForPage = true;
     pageRevision += 1;
     stop();
+    selection.close();
     controls.setHidden(true);
   }
 
   function toggle(): void {
+    syncPage();
     if (hiddenForPage) {
       hiddenForPage = false;
       controls.setHidden(false);
@@ -453,8 +476,14 @@ if (window.top === window && document.body) {
     if (!active || processing) return;
     if (quotaBlocked) {
       try {
+        const previousLimit = budgetInfo?.limit;
+        const check = await providerStatus();
+        if (check?.budget && (!check.budget.enabled || (previousLimit !== undefined && check.budget.limit > previousLimit))) quotaBlocked = false;
+        if (quotaBlocked) {
         const result = await chrome.runtime.sendMessage({ type: 'EXTEND_BUDGET' }) as RuntimeResponse;
         if (!result?.ok) { status(result?.error || '无法增加预算'); return; }
+        if (result.budget) budgetInfo = result.budget;
+        }
       } catch { status('扩展后台暂时不可用'); return; }
     }
     blocked = false;
@@ -468,12 +497,14 @@ if (window.top === window && document.body) {
   // navigation regions without polling the whole page.
   function recheck(event: Event): void {
     if (!active) return;
-    const element = event.target instanceof Element ? event.target : null;
+    const element = event.composedPath().find((node): node is Element => node instanceof Element) ?? null;
     if (!element || owned(element)) return;
     // Pointer movement is frequent, so the cheap landmark lookup runs first and
     // the structural search only for anchors that have no landmark above them.
-    const container = element.closest('nav,[role="navigation"],[role="menu"],[role="menubar"],[role="tablist"],footer,header,details')
-      ?? (element.closest('a[href],[role="link"]') ? navigationFor(element) : null);
+    observer?.discover(element);
+    scheduleLayoutCheck();
+    const container = closestComposed(element, 'nav,[role="navigation"],[role="menu"],[role="menubar"],[role="tablist"],footer,header,details')
+      ?? (closestComposed(element, 'a[href],[role="link"]') ? navigationFor(element) : null);
     if (!container) return;
     if (dirtyScopes.has(container)) return;
     dirtyScopes.add(container);
@@ -493,6 +524,7 @@ if (window.top === window && document.body) {
       return;
     }
     if (data.type === 'MT_SELECTION') {
+      syncPage();
       const text = typeof data.text === 'string' ? data.text : '';
       if (data.frameOk === false) selection.open(text, '划词翻译只支持顶层网页；子框架中的选区不会发送。');
       else if (data.editable === true) selection.open(text, '输入框、密码框和可编辑区域的内容不会被发送翻译。');
@@ -501,15 +533,28 @@ if (window.top === window && document.body) {
     }
   });
 
-  let currentDocumentUrl = location.origin + location.pathname + location.search;
-  setInterval(() => {
-    const next = location.origin + location.pathname + location.search;
-    if (next !== currentDocumentUrl || (mainRoot && !mainRoot.isConnected)) {
+  let currentDocumentUrl = pageUrlIdentity(location.href);
+  function syncPage(): void {
+    const next = pageUrlIdentity(location.href);
+    if (next !== currentDocumentUrl) {
       currentDocumentUrl = next;
       pageRevision += 1;
       selectionCache.clear();
+      forgetAll();
+      tokenTotal = 0;
+      budgetInfo = undefined;
+      selection.close();
       if (active) { stop(); status('页面已切换；点击悬浮球翻译新页面'); }
       if (hiddenForPage) { hiddenForPage = false; controls.setHidden(false); }
     }
-  }, 1000);
+  }
+  setInterval(syncPage, 1000);
+  let currentTitle = document.title.slice(0, 180);
+  const titleObserver = new MutationObserver(() => {
+    const next = document.title.slice(0, 180);
+    if (next === currentTitle) return;
+    currentTitle = next;
+    if (active) { dirtyScopes.add(document.body); scheduleScan(); }
+  });
+  titleObserver.observe(document.head, { subtree: true, childList: true, characterData: true });
 }

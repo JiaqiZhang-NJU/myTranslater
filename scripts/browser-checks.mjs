@@ -137,6 +137,7 @@ try {
     }`);
   }
   async function check(name, body) {
+    if (process.env.MT_CHECK && !new RegExp(process.env.MT_CHECK).test(name)) return;
     try {
       await body();
       results.push({ name, ok: true });
@@ -148,7 +149,7 @@ try {
   }
 
   const controlsVisible = `getComputedStyle(document.querySelector('#mt-controls')).display !== 'none'`;
-  await check('controls: fixed edge tab, no dragging, keyboard focus and menu', async () => {
+  await check('controls: vertical edge dragging, click suppression, keyboard focus and menu', async () => {
     await open('/fullscreen.html');
     const geometry = `(() => {
       const rect = document.querySelector('.mt-ball').getBoundingClientRect();
@@ -162,8 +163,12 @@ try {
     await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: before.right - 18, y: before.top + 24, button: 'left', clickCount: 1 });
     await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: before.right - 150, y: before.top + 100, button: 'left', buttons: 1 });
     await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: before.right - 150, y: before.top + 100, button: 'left', clickCount: 1 });
-    assert.deepEqual(await evaluate(geometry), before, 'dragging cannot move the tab');
+    const after = await evaluate(geometry);
+    assert.equal(after.right, before.right, 'dragging remains attached to the edge');
+    assert.equal(after.top, before.top + 76, 'vertical movement follows the pointer');
+    assert.equal(await evaluate('window.requests.length'), 0, 'dragging does not toggle translation');
     await evaluate(`document.querySelector('.mt-ball').focus()`);
+    await until(`getComputedStyle(document.querySelector('.mt-panel')).visibility === 'visible'`);
     assert.equal(await evaluate(`getComputedStyle(document.querySelector('.mt-panel')).visibility`), 'visible', 'keyboard focus exposes actions');
     await evaluate(`document.querySelector('.mt-ball').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))`);
     const menu = await evaluate(`(() => { const r = document.querySelector('.mt-context-menu').getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: innerWidth, height: innerHeight }; })()`);
@@ -324,7 +329,7 @@ try {
       const batch = window.requests.find(item => item.groups.some(group => group.blocks.some(block => clean(block.text) === 'VODs')));
       return batch ? batch.groups.flatMap(group => group.blocks).map(block => clean(block.text)) : null;
     })()`);
-    assert.deepEqual(addedItemRequest, ['VODs'], 'only the new navigation item is sent, not the already translated siblings');
+    assert.deepEqual(addedItemRequest, ['Overview', 'Matches', "Pick'em", 'Stats', 'Agents', 'News', 'VODs'], 'the changed navigation group receives its new context');
     const before = await evaluate('window.requests.length');
     await until('document.querySelector("#intro").textContent.startsWith("Updated coverage")');
     await until('[...document.querySelectorAll("#intro + .mt-translation")].some(n => n.textContent.includes("Updated coverage"))', 'changed paragraph retranslated');
@@ -448,6 +453,174 @@ try {
     await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
     assert.equal(await evaluate(`document.querySelector('#mt-selection').classList.contains('mt-sel-closed')`), true, 'Escape closes the panel');
     assert.equal(await evaluate('window.requests.length'), 0, 'no page batch was ever requested on this page');
+  });
+
+  const complete = `(() => { const match = document.querySelector('.mt-panel [role=status]').textContent.match(/已翻译 (\\d+)\\/(\\d+)/); return match && Number(match[1]) > 0 && match[1] === match[2]; })()`;
+  const sourceTexts = `window.requests.flatMap(batch => batch.groups.flatMap(group => group.blocks.map(block => window.__clean(block.text))))`;
+  async function menuAction(text) {
+    await evaluate(`document.querySelector('.mt-ball').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true})); [...document.querySelectorAll('.mt-context-menu button')].find(button => button.textContent.includes(${JSON.stringify(text)})).click()`);
+  }
+  await send('Emulation.setFocusEmulationEnabled', { enabled: true });
+  await check('cache: restore, DOM rebuild, budget-only save, provider identity and explicit retranslation', async () => {
+    await open('/components.html');
+    await evaluate('window.toggleFromToolbar()');
+    await until(complete, 'initial page translation completed');
+    const initial = await evaluate('({requests:window.requests.length,used:window.budget.used,count:window.translationCount()})');
+    await evaluate('window.toggleFromToolbar()');
+    assert.equal(await evaluate('window.translationCount()'), 0, 'restoring removes translations in every root');
+    await evaluate('window.toggleFromToolbar()');
+    await until(complete, 'cached page completed');
+    assert.equal(await evaluate('window.requests.length'), initial.requests, 'a mistaken toggle sends zero new model requests');
+    assert.equal(await evaluate('window.budget.used'), initial.used, 'cache hits do not charge the budget');
+    await evaluate(`window.toggleFromToolbar(); const old=document.querySelector('#plain'); const fresh=old.cloneNode(false); fresh.textContent='This article explains reusable components.'; old.replaceWith(fresh); window.resetComments(); window.budget.limit=40000; window.toggleFromToolbar()`);
+    await until(complete, 'cache remapped to reconstructed DOM');
+    assert.equal(await evaluate('window.requests.length'), initial.requests, 'new DOM IDs and a new budget limit preserve matching content');
+    await evaluate(`window.toggleFromToolbar(); window.provider={identity:'fixture:model-two',settingsVersion:2}; window.toggleFromToolbar()`);
+    await until(complete, 'new provider finished');
+    const changed = await evaluate('window.requests.length');
+    assert.ok(changed > initial.requests, 'a different model uses its own cache identity');
+    await evaluate(`window.toggleFromToolbar(); window.provider={identity:'fixture:model-one',settingsVersion:3}; window.toggleFromToolbar()`);
+    await until(complete, 'original provider cache reused');
+    assert.equal(await evaluate('window.requests.length'), changed, 'request settings version is separate from the model cache');
+    await menuAction('重新翻译当前页');
+    await until(complete, 'explicit retranslation finished');
+    assert.ok(await evaluate('window.requests.length') > changed, 'explicit retranslation sends new requests');
+  });
+  await check('cache: partial completion, stale session response, context changes and page switch', async () => {
+    await open('/components.html');
+    await evaluate('window.toggleFromToolbar()');
+    await until(complete);
+    const initial = await evaluate('window.requests.length');
+    await evaluate(`window.holdNext=true; document.querySelector('#plain').textContent='A revised article explains reusable components.'`);
+    await until('Boolean(window.release)', 'changed text request started');
+    await evaluate('window.toggleFromToolbar(); window.toggleFromToolbar(); window.release()');
+    await until(complete, 'new translation session finished');
+    assert.equal(await evaluate('window.requests.length'), initial + 2, 'only the missing changed group is requested; the cancelled result is not cached');
+    assert.equal(await evaluate(`window.roots().flatMap(root=>[...root.querySelectorAll('.mt-translation')]).filter(node=>node.textContent.includes('A revised article')).length`), 1, 'the new session has one current translation');
+    const priorContext = await evaluate('window.requests.length');
+    await evaluate(`document.querySelector('h1').textContent='Updated component context'`);
+    await until(complete, 'context change finished');
+    await until(`window.requests.length > ${priorContext}`);
+    await evaluate(`window.toggleFromToolbar(); history.pushState({},'', '?new-document')`);
+    const priorPage = await evaluate('window.requests.length');
+    await evaluate('window.toggleFromToolbar()');
+    await until(complete, 'new page cache started empty');
+    assert.ok(await evaluate('window.requests.length') > priorPage, 'switching page clears the page-local cache');
+  });
+  await check('cache: in-flight title changes and whole main reconstruction never poison a new context', async () => {
+    await open('/components.html');
+    await evaluate(`window.holdNext=true;window.toggleFromToolbar()`);
+    await until('Boolean(window.release)');
+    await evaluate(`document.title='Updated asynchronous title';window.release()`);
+    await until(complete, 'new title context translated');
+    assert.equal(await evaluate(`window.requests.slice(1).every(batch=>batch.pageTitle==='Updated asynchronous title')`),true,'stale title response is discarded and subsequent requests use the new context');
+    const count=await evaluate('window.requests.length');
+    await evaluate(`window.toggleFromToolbar();window.toggleFromToolbar()`);
+    await until(complete);
+    assert.equal(await evaluate('window.requests.length'),count,'new title cache contains only matching successful responses');
+    await evaluate(`const main=document.querySelector('main');const fresh=main.cloneNode(true);fresh.querySelectorAll('.mt-translation').forEach(node=>node.remove());main.replaceWith(fresh);window.resetComments();document.querySelector('#slotted').attachShadow({mode:'open'}).innerHTML='<style>:host{display:block}</style><slot name="comment"><p id="fallback">Fallback comment has no assigned content.</p></slot>';document.querySelector('#menu-host').attachShadow({mode:'open'}).innerHTML='<style>:host{display:block}#menu{display:none}</style><nav aria-label="Documentation"><button id="toggle">Documentation</button><div id="menu"><slot name="items"></slot></div></nav>'`);
+    await wait(1500);
+    assert.equal(await evaluate('document.querySelector(".mt-ball").classList.contains("mt-active")'),true,'rebuilding main on the same page preserves the session');
+    assert.equal(await evaluate('window.requests.length'),count,'matching rebuilt content uses cache');
+  });
+  await check('Shadow DOM: nested roots, slots, late roots, updates, exclusions and restore cleanup', async () => {
+    await open('/components.html');
+    await evaluate('window.toggleFromToolbar()');
+    await until(complete);
+    const texts = await evaluate(sourceTexts);
+    for (const text of ['The first reader shares an interesting perspective.', 'A nested reply expands on the discussion.', 'Assigned comment appears once.']) assert.equal(texts.filter(item=>item===text).length, 1, `one extraction for ${text}`);
+    for (const text of ['Fallback comment has no assigned content.', 'Hidden documentation menu item', 'Secret hidden comment.', 'Private draft in an editor.', 'Excluded component comment.', 'Closed root remains unsupported.']) assert.equal(texts.filter(item=>item===text).length, 0, `excluded ${text}`);
+    assert.equal(await evaluate(`document.querySelector('#assigned .mt-translation') !== null`), true, 'assigned content owns its visible translation');
+    assert.equal(await evaluate(`document.querySelector('#comments').shadowRoot.querySelector('#nested').shadowRoot.querySelectorAll('.mt-translation').length`), 1, 'nested root renders its comment');
+    assert.equal(await evaluate(`window.roots().filter(root=>root instanceof ShadowRoot).every(root=>root.querySelectorAll('style[data-mt-owned]').length <= 1)`), true, 'at most one style per root');
+    await evaluate(`const host=document.createElement('direct-comment');host.id='direct-comment';document.querySelector('main').append(host);host.attachShadow({mode:'open'}).append(document.createTextNode('A direct component text keeps its identity.'))`);
+    await until(`(${sourceTexts}).includes('A direct component text keeps its identity.')`);
+    await evaluate(`const root=document.querySelector('#direct-comment').shadowRoot;const text=[...root.childNodes].find(node=>node.nodeType===3);const paragraph=document.createElement('p');paragraph.append(text);root.append(paragraph)`);
+    await wait(1500);
+    assert.equal(await evaluate(`document.querySelector('#direct-comment').shadowRoot.querySelectorAll('.mt-translation').length`),1,'changing the owner of the same shadow text removes the previous host translation');
+    assert.equal(await evaluate(`(${sourceTexts}).filter(text=>text==='A direct component text keeps its identity.').length`),1,'matching source and context reuse cache when the owner changes');
+    await evaluate(`window.attachLate()`);
+    await until(`(${sourceTexts}).includes('Delayed component comment becomes visible.')`, 'late attachShadow discovery');
+    await evaluate(`document.querySelector('#comments').shadowRoot.querySelector('#first-comment').textContent='An updated reader comment is now visible.'`);
+    await until(`(${sourceTexts}).includes('An updated reader comment is now visible.')`);
+    await evaluate(`const reply=document.createElement('p'); reply.textContent='An expanded reply adds more detail.'; document.querySelector('#comments').shadowRoot.querySelector('#nested').shadowRoot.append(reply)`);
+    await until(`(${sourceTexts}).includes('An expanded reply adds more detail.')`);
+    await evaluate(`document.querySelector('#slotted').shadowRoot.querySelector('slot').name='other'`);
+    await until(`(${sourceTexts}).includes('Fallback comment has no assigned content.')`, 'slot fallback translated');
+    const beforeSlot = await evaluate('window.requests.length');
+    await evaluate(`document.querySelector('#slotted').shadowRoot.querySelector('slot').name='comment'`);
+    await wait(1500);
+    assert.equal(await evaluate('window.requests.length'), beforeSlot, 'redistributed original slot content reuses cache');
+    await evaluate(`document.querySelector('#late').remove(); window.toggleFromToolbar()`);
+    assert.equal(await evaluate('window.translationCount()'), 0, 'restore cleans ordinary, slotted and shadow translations');
+    const stopped = await evaluate('window.requests.length');
+    await evaluate(`document.querySelector('#comments').shadowRoot.querySelector('#first-comment').textContent='Comment updated while translation is off.'`);
+    await wait(1200);
+    assert.equal(await evaluate('window.requests.length'), stopped, 'stopped observers send no requests');
+  });
+  await check('layout: compact controls, bounded selectable fallback, menus, Escape and resize without requests', async () => {
+    await open('/components.html');
+    const before = await evaluate(`[...document.querySelectorAll('#fixed-nav button')].map(node=>({left:node.getBoundingClientRect().left,width:node.getBoundingClientRect().width,height:node.getBoundingClientRect().height}))`);
+    await evaluate('window.toggleFromToolbar()');
+    await until(complete);
+    assert.deepEqual(await evaluate(`[...document.querySelectorAll('#fixed-nav button')].map(node=>({left:node.getBoundingClientRect().left,width:node.getBoundingClientRect().width,height:node.getBoundingClientRect().height}))`), before, 'fixed navigation dimensions and neighbor positions stay intact');
+    assert.equal(await evaluate(`document.querySelectorAll('#fixed-nav .mt-translation').length`), 0, 'unsafe inline translations are withdrawn');
+    await evaluate(`document.querySelector('#docs').focus()`);
+    try { await until(`document.querySelector('#mt-layout-panel') && !document.querySelector('#mt-layout-panel').hidden`); }
+    catch (error) {
+      console.log('     layout diagnostic: '+JSON.stringify(await evaluate(`(() => {const p=document.querySelector('#mt-layout-panel'); return {focus:document.activeElement.id,panel:p?.outerHTML,status:document.querySelector('.mt-panel [role=status]').textContent,requests:window.requests};})()`)));
+      throw error;
+    }
+    const overlay = await evaluate(`(() => { const root=document.querySelector('#mt-layout-panel'); const r=root.getBoundingClientRect(); return {text:root.textContent,left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:innerWidth,height:innerHeight,select:getComputedStyle(root).userSelect}; })()`);
+    assert.match(overlay.text, /Docs/);
+    assert.equal(overlay.select, 'text');
+    assert.ok(overlay.left>=0 && overlay.top>=0 && overlay.right<=overlay.width && overlay.bottom<=overlay.height, 'fallback is fully within the viewport');
+    await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);
+    assert.equal(await evaluate(`document.querySelector('#mt-layout-panel').hidden`), true);
+    const requests = await evaluate('window.requests.length');
+    await send('Emulation.setDeviceMetricsOverride',{width:420,height:360,deviceScaleFactor:1,mobile:false});
+    await wait(1100);
+    assert.equal(await evaluate('window.requests.length'), requests, 'layout rechecks do not retranslate unchanged text');
+    await evaluate(`[...document.querySelectorAll('.mt-panel button')].find(button=>button.textContent==='查看受限译文').click()`);
+    assert.match(await evaluate(`document.querySelector('#mt-layout-panel').textContent`), /constrained description/);
+    await evaluate(`document.querySelector('#mt-layout-panel').scrollTop=40`);
+    await wait(150);
+    assert.equal(await evaluate(`document.querySelector('#mt-layout-panel').hidden`), false, 'the restricted list can scroll without closing');
+    await evaluate(`document.querySelector('#menu-host').shadowRoot.querySelector('#toggle').click()`);
+    await until(`(${sourceTexts}).includes('Hidden documentation menu item')`);
+    const openedRequests = await evaluate('window.requests.length');
+    await evaluate(`document.querySelector('#menu-host').shadowRoot.querySelector('#toggle').click()`);
+    await wait(1100);
+    assert.equal(await evaluate(`document.querySelector('#hidden-menu-link .mt-translation') !== null`), false, 'closed menu has no escaped translation');
+    await evaluate(`document.querySelector('#menu-host').shadowRoot.querySelector('#toggle').click()`);
+    await wait(1100);
+    assert.equal(await evaluate('window.requests.length'), openedRequests, 'reopening menu uses completed cache');
+    await evaluate('window.toggleFromToolbar()');
+    assert.equal(await evaluate(`document.querySelector('#mt-layout-panel').hidden`), true, 'restoring closes the fallback');
+    await send('Emulation.clearDeviceMetricsOverride');
+  });
+  await check('controls: origin position memory, boundaries, reset and shadow player fullscreen', async () => {
+    await open('/components.html');
+    await evaluate(`localStorage.removeItem('dock')`);
+    const rect = await evaluate(`(() => {const r=document.querySelector('.mt-ball').getBoundingClientRect();return {x:r.right-18,y:r.top+24};})()`);
+    await send('Input.dispatchMouseEvent',{type:'mousePressed',x:rect.x,y:rect.y,button:'left',clickCount:1});
+    const bottom = await evaluate('innerHeight-1');
+    await send('Input.dispatchMouseEvent',{type:'mouseMoved',x:rect.x-100,y:bottom,button:'left',buttons:1});
+    await send('Input.dispatchMouseEvent',{type:'mouseReleased',x:rect.x-100,y:bottom,button:'left',clickCount:1});
+    assert.equal(await evaluate('window.positionWrites.length'), 1, 'one write at drag completion');
+    assert.equal(await evaluate('window.positionWrites[0]'), 1, 'position clamps to the bottom');
+    await open('/components.html');
+    await until(`document.querySelector('.mt-ball').getBoundingClientRect().bottom === innerHeight-8`);
+    await evaluate(`document.querySelector('.mt-ball').focus()`);
+    const panel = await evaluate(`(() => {const r=document.querySelector('.mt-panel').getBoundingClientRect();return {top:r.top,bottom:r.bottom,height:innerHeight};})()`);
+    assert.ok(panel.top>=0 && panel.bottom<=panel.height, 'actions stay visible at the bottom edge');
+    await menuAction('重置按钮位置');
+    assert.equal(await evaluate(`document.querySelector('.mt-ball').getBoundingClientRect().top`), await evaluate('(innerHeight-48)/2'));
+    await evaluate(`const host=document.createElement('shadow-player');document.body.append(host);const root=host.attachShadow({mode:'open'});root.innerHTML='<style>#player{position:fixed;inset:0;background:black}video{width:100%;height:100%}</style><div id="player"><video></video></div>'; window.playerHost=host`);
+    await until(`!(${controlsVisible})`, 'fullscreen inside an open shadow root');
+    await evaluate('window.playerHost.remove()');
+    await until(controlsVisible);
+    assert.equal(await evaluate(`document.querySelector('.mt-ball').getBoundingClientRect().top`), await evaluate('(innerHeight-48)/2'), 'fullscreen exit restores the remembered height');
   });
 } finally {
   socket?.close();

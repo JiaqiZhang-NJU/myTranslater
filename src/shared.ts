@@ -48,6 +48,8 @@ export type ContentMessage =
   | { type: 'TRANSLATE'; sessionId: string; settingsVersion: number; batch: TranslationBatch }
   | { type: 'CANCEL'; sessionId: string }
   | { type: 'EXTEND_BUDGET' }
+  | { type: 'GET_DOCK_POSITION' }
+  | { type: 'SET_DOCK_POSITION'; ratio: number }
   | { type: 'OPEN_OPTIONS' };
 
 export function isTranslationBatch(value: unknown): value is TranslationBatch {
@@ -77,4 +79,9 @@ export function isTranslationBatch(value: unknown): value is TranslationBatch {
   }
   if (selection) return ids.size <= 2 && totalChars <= 2400;
   return ids.size <= 12 && totalChars <= 6500;
+}
+/** Anchor jumps stay on the page; common hash-router paths identify a new page. */
+export function pageUrlIdentity(url: string): string {
+  const page = new URL(url);
+  return page.origin + page.pathname + page.search + (/^(#\/|#!)/.test(page.hash) ? page.hash : '');
 }

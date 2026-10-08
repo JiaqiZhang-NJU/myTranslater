@@ -1,6 +1,8 @@
 import { parseProviderSettings, providerIdentity, translateConfigured } from './settings';
-import { isTranslationBatch, type ContentMessage, type TranslationBatch } from './shared';
+import { isTranslationBatch, pageUrlIdentity, type ContentMessage, type TranslationBatch } from './shared';
 import { TranslationError } from './translation';
+import { currentBudget, parseBudgetSettings, snapshot, type TabBudget } from './budget';
+import { dockPosition } from './dock-settings';
 
 const MAX_ACTIVE = 2;
 const controllers = new Map<string, Set<AbortController>>();
@@ -69,8 +71,6 @@ function markCancelled(identity: string): void {
   }
 }
 
-interface TabBudget { documentId: string; used: number; inFlight: number; limit: number }
-
 async function withBudget<T>(tabId: number, operation: () => Promise<T>): Promise<T> {
   const prior = budgetSerial.get(tabId) ?? Promise.resolve();
   let release!: () => void;
@@ -88,12 +88,17 @@ async function withBudget<T>(tabId: number, operation: () => Promise<T>): Promis
 async function budget(tabId: number, documentId: string, provider: 'deepseek' | 'ollama', cost = 0, extend = false): Promise<TabBudget> {
   return withBudget(tabId, async () => {
     const key = `budget:${tabId}:${provider}`;
+    const settings = parseBudgetSettings((await chrome.storage.local.get('budgetSettings')).budgetSettings)[provider];
     const raw = (await chrome.storage.session.get(key))[key] as Partial<TabBudget> | undefined;
-    const current: TabBudget = raw?.documentId === documentId && Number.isSafeInteger(raw.used) && Number.isSafeInteger(raw.inFlight) && Number.isSafeInteger(raw.limit)
-      ? { documentId, used: raw.used!, inFlight: raw.inFlight!, limit: raw.limit! }
-      : { documentId, used: 0, inFlight: 0, limit: 30_000 };
-    if (cost && current.used + current.inFlight + cost > current.limit) throw new TranslationError('本页达到预计 token 上限；可选择增加本页预算后继续', 'quota');
-    if (extend) current.limit += 30_000;
+    const current = currentBudget(raw, documentId, settings);
+    if (cost && current.enabled && current.used + current.inFlight + cost > current.limit) {
+      await chrome.storage.session.set({ [key]: current });
+      throw Object.assign(new TranslationError('本页达到预计 token 上限；可选择增加本页预算后继续', 'budget'), { budget: snapshot(current) });
+    }
+    if (extend && current.enabled) {
+      if (!Number.isSafeInteger(current.limit + settings.limit)) throw new TranslationError('预算额度过大，请在设置页调整', 'config');
+      current.limit += settings.limit;
+    }
     current.inFlight += cost;
     await chrome.storage.session.set({ [key]: current });
     return current;
@@ -106,6 +111,18 @@ async function settleBudget(tabId: number, documentId: string, provider: 'deepse
     const current = (await chrome.storage.session.get(key))[key] as TabBudget | undefined;
     if (current?.documentId !== documentId) return;
     await chrome.storage.session.set({ [key]: { ...current, used: current.used + actualCost, inFlight: Math.max(0, current.inFlight - reservedCost) } });
+  });
+}
+
+/** An older response cannot replace the budget already created for a new route. */
+async function responseBudget(tabId: number, documentId: string, provider: 'deepseek' | 'ollama') {
+  return withBudget(tabId, async () => {
+    const key = `budget:${tabId}:${provider}`;
+    const raw = (await chrome.storage.session.get(key))[key] as TabBudget | undefined;
+    const setting = parseBudgetSettings((await chrome.storage.local.get('budgetSettings')).budgetSettings)[provider];
+    const value = currentBudget(raw, documentId, setting);
+    if (raw?.documentId === documentId) await chrome.storage.session.set({ [key]: value });
+    return snapshot(value);
   });
 }
 
@@ -124,6 +141,12 @@ async function translateFromTab(tabId: number, documentId: string, sessionId: st
     const reserve = batch.mode === 'selection' ? 512 : 2048;
     const cost = Math.ceil(JSON.stringify(batch).length / 2) + reserve;
     await budget(tabId, documentId, settings.provider, cost);
+    const latestVersion = (await providerSettings()).version;
+    const cancelledBeforeStart = cancelled.delete(identity);
+    if (cancelledBeforeStart || latestVersion !== settingsVersion) {
+      await settleBudget(tabId, documentId, settings.provider, cost, 0);
+      throw new TranslationError(cancelledBeforeStart ? '已取消' : '翻译方式已更新，请重新开启本页翻译', cancelledBeforeStart ? 'cancelled' : 'config');
+    }
     const controller = new AbortController();
     const set = controllers.get(identity) ?? new Set<AbortController>();
     set.add(controller);
@@ -131,14 +154,15 @@ async function translateFromTab(tabId: number, documentId: string, sessionId: st
     let acquired = false;
     let requestStarted = false;
     let actualCost = 0;
+    let result: Awaited<ReturnType<typeof translateConfigured>>;
     try {
       await acquire(controller.signal);
       acquired = true;
       requestStarted = true;
-      const result = await translateConfigured(settings, key, batch, controller.signal);
+      result = await translateConfigured(settings, key, batch, controller.signal);
+      if (controller.signal.aborted) throw new TranslationError('已取消', 'cancelled');
       if ((await providerSettings()).version !== settingsVersion) throw new TranslationError('翻译方式已更新，请重新开启本页翻译', 'config');
       actualCost = result.usage?.totalTokens ?? cost;
-      return { ok: true as const, ...result };
     } catch (error) {
       // A failed cloud request may still be billed; retain its estimate only if
       // the provider call began. Failed local requests consume no API budget.
@@ -151,6 +175,7 @@ async function translateFromTab(tabId: number, documentId: string, sessionId: st
       cancelled.delete(identity);
       await settleBudget(tabId, documentId, settings.provider, cost, actualCost);
     }
+    return { ok: true as const, ...result!, budget: await responseBudget(tabId, documentId, settings.provider) };
   });
 }
 
@@ -160,11 +185,18 @@ async function handle(message: unknown, sender: chrome.runtime.MessageSender) {
   const fromTab = sender.id === chrome.runtime.id && sender.tab?.id !== undefined && /^https?:\/\//.test(sender.url ?? '');
   if (fromTab) {
     const tabId = sender.tab!.id!;
-    const documentId = sender.documentId ?? (sender.url ?? '').split('#')[0];
+    const pageUrl = pageUrlIdentity(sender.url!);
+    const documentId = sender.documentId ? `${sender.documentId}:${pageUrl}` : pageUrl;
+    if (data.type === 'GET_DOCK_POSITION' || data.type === 'SET_DOCK_POSITION') {
+      if (sender.frameId && sender.frameId !== 0) return { ok: false, error: '只支持顶层网页' };
+      if (data.type === 'SET_DOCK_POSITION' && (!Number.isFinite(data.ratio) || data.ratio < 0 || data.ratio > 1)) return { ok: false, error: '按钮位置无效' };
+      return { ok: true, ratio: await dockPosition(new URL(sender.url!).origin, data.type === 'SET_DOCK_POSITION' ? data.ratio : undefined) };
+    }
     if (data.type === 'GET_PROVIDER_STATUS') {
       const settings = await providerSettings();
       const ready = settings.provider === 'ollama' ? Boolean(settings.ollamaModel) : Boolean(await apiKey());
       return { ok: true, ready, provider: settings.provider, identity: providerIdentity(settings), settingsVersion: settings.version,
+        budget: snapshot(await budget(tabId, documentId, settings.provider)),
         message: ready ? '' : settings.provider === 'ollama' ? '请先选择 Ollama 本机模型' : '请先填写 DeepSeek API Key' };
     }
     if (data.type === 'OPEN_OPTIONS') { await chrome.runtime.openOptionsPage(); return { ok: true }; }
@@ -174,9 +206,13 @@ async function handle(message: unknown, sender: chrome.runtime.MessageSender) {
       for (const controller of controllers.get(identity) ?? []) controller.abort();
       return { ok: true };
     }
-    if (data.type === 'EXTEND_BUDGET') { const settings = await providerSettings(); await budget(tabId, documentId, settings.provider, 0, true); return { ok: true }; }
+    if (data.type === 'EXTEND_BUDGET') { const settings = await providerSettings(); return { ok: true, budget: snapshot(await budget(tabId, documentId, settings.provider, 0, true)) }; }
     if (data.type === 'TRANSLATE' && typeof data.sessionId === 'string' && /^[\w-]{1,80}$/.test(data.sessionId) && Number.isSafeInteger(data.settingsVersion) && data.settingsVersion >= 0 && isTranslationBatch(data.batch)) {
-      return translateFromTab(tabId, documentId, data.sessionId, data.settingsVersion, data.batch);
+      try { return await translateFromTab(tabId, documentId, data.sessionId, data.settingsVersion, data.batch); }
+      catch (error) {
+        const settings = await providerSettings();
+        throw Object.assign(error as Error, { budget: await responseBudget(tabId, documentId, settings.provider) });
+      }
     }
   }
   return { ok: false, error: '不允许此操作' };
@@ -185,13 +221,14 @@ async function handle(message: unknown, sender: chrome.runtime.MessageSender) {
 chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
   handle(message, sender).then(sendResponse).catch((error: unknown) => {
     const known = error instanceof TranslationError;
-    sendResponse({ ok: false, error: known ? error.message : '扩展发生错误', kind: known ? error.kind : 'unknown' });
+    sendResponse({ ok: false, error: known ? error.message : '扩展发生错误', kind: known ? error.kind : 'unknown',
+      budget: (error as { budget?: unknown })?.budget });
   });
   return true;
 });
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName !== 'local' || !changes.settingsVersion) return;
+  if (areaName !== 'local' || !changes.settingsVersion || changes.settingsVersion.oldValue === changes.settingsVersion.newValue) return;
   for (const set of controllers.values()) for (const controller of set) controller.abort();
 });
 

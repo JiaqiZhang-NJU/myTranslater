@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Component translation checks</title>
+<link rel="stylesheet" href="/content.css">
+<style>
+body { margin: 0; padding: 52px 20px; font: 16px/1.5 sans-serif; }
+#fixed-nav { position: fixed; top: 0; left: 0; height: 34px; display: flex; gap: 6px; background: white; }
+#fixed-nav button { width: 66px; height: 30px; overflow: hidden; flex: none; white-space: nowrap; }
+#clipped { width: 240px; height: 26px; overflow: hidden; }
+</style></head><body>
+<nav id="fixed-nav" aria-label="Primary"><button id="docs">Docs</button><button id="learn">Learn</button><button id="tools">Tools</button></nav>
+<main><h1>Component comments</h1><p id="plain">This article explains reusable components.</p>
+<div id="clipped"><span id="clipped-text">A constrained description of the article.</span></div>
+<comment-thread id="comments"></comment-thread>
+<slotted-comment id="slotted"><p slot="comment" id="assigned">Assigned comment appears once.</p></slotted-comment>
+<docs-menu id="menu-host"><a slot="items" href="#hidden" id="hidden-menu-link">Hidden documentation menu item</a></docs-menu>
+<late-comments id="late"></late-comments>
+<hidden-comments hidden id="hidden-host"></hidden-comments>
+<editable-comments contenteditable="true" id="editor-host"></editable-comments>
+<private-comments translate="no" id="no-host"></private-comments>
+<closed-comments id="closed"></closed-comments>
+<div id="flex" style="display:flex;gap:12px"><span>Flexible article caption.</span><span>Another article caption.</span></div>
+</main>
+<script>
+const commentMarkup = '<style>:host{display:block}.comment{padding:4px 0}</style><section><h2>Reader comments</h2><div class="comment" id="first-comment">The first reader shares an interesting perspective.</div><nested-comment id="nested"></nested-comment></section>';
+window.resetComments = () => {
+  const root = document.querySelector('#comments').shadowRoot || document.querySelector('#comments').attachShadow({mode:'open'});
+  root.innerHTML = commentMarkup;
+  root.querySelector('#nested').attachShadow({mode:'open'}).innerHTML = '<style>:host{display:block}</style><p id="reply">A nested reply expands on the discussion.</p>';
+};
+window.resetComments();
+document.querySelector('#slotted').attachShadow({mode:'open'}).innerHTML = '<style>:host{display:block}</style><slot name="comment"><p id="fallback">Fallback comment has no assigned content.</p></slot>';
+document.querySelector('#menu-host').attachShadow({mode:'open'}).innerHTML = '<style>:host{display:block}#menu{display:none}</style><nav aria-label="Documentation"><button id="toggle">Documentation</button><div id="menu"><slot name="items"></slot></div></nav>';
+document.querySelector('#menu-host').shadowRoot.querySelector('#toggle').onclick = () => {
+  const menu = document.querySelector('#menu-host').shadowRoot.querySelector('#menu');
+  menu.style.display = menu.style.display === 'block' ? 'none' : 'block';
+};
+for (const [id, text] of [['hidden-host','Secret hidden comment.'],['editor-host','Private draft in an editor.'],['no-host','Excluded component comment.']]) {
+  document.getElementById(id).attachShadow({mode:'open'}).innerHTML = '<p>' + text + '</p>';
+}
+window.closedRoot = document.querySelector('#closed').attachShadow({mode:'closed'});
+window.closedRoot.innerHTML = '<p>Closed root remains unsupported.</p>';
+window.attachLate = () => document.querySelector('#late').attachShadow({mode:'open'}).innerHTML = '<style>:host{display:block}</style><p>Delayed component comment becomes visible.</p>';
+window.roots = () => {
+  const roots = [document];
+  for (let i=0;i<roots.length;i++) for (const node of roots[i].querySelectorAll('*')) if (node.shadowRoot) roots.push(node.shadowRoot);
+  return roots;
+};
+window.translationCount = () => window.roots().reduce((sum, root) => sum + root.querySelectorAll('.mt-translation').length, 0);
+window.requests = []; window.selectionRequests = []; window.cancels = []; window.positionWrites = [];
+window.provider = {identity:'fixture:model-one',settingsVersion:1};
+window.budget = {enabled:true,limit:30000,used:0,inFlight:0};
+window.holdNext = false; window.longTranslations = true;
+window.chrome = {runtime:{id:'smoke-extension',onMessage:{addListener:listener => {
+  window.toggleFromToolbar = () => listener({type:'TOGGLE_TRANSLATION'},{id:'smoke-extension'},()=>{});
+  window.selectionMessage = data => listener({...data,type:'MT_SELECTION'},{id:'smoke-extension'},()=>{});
+}},sendMessage:async message => {
+  if (message.type === 'GET_DOCK_POSITION') return {ok:true,ratio:Number(localStorage.getItem('dock') || '.5')};
+  if (message.type === 'SET_DOCK_POSITION') { window.positionWrites.push(message.ratio); localStorage.setItem('dock',message.ratio); return {ok:true}; }
+  if (message.type === 'GET_PROVIDER_STATUS') return {ok:true,ready:true,provider:'ollama',...window.provider,budget:{...window.budget}};
+  if (message.type === 'EXTEND_BUDGET') { window.budget.limit += 30000; return {ok:true,budget:{...window.budget}}; }
+  if (message.type === 'CANCEL') { window.cancels.push(message.sessionId); return {ok:true}; }
+  if (message.type === 'TRANSLATE') {
+    (message.batch.mode === 'selection' ? window.selectionRequests : window.requests).push(message.batch);
+    if (window.holdNext) { window.holdNext=false; await new Promise(resolve => window.release=resolve); }
+    window.budget.used += 10;
+    return {ok:true,usage:{totalTokens:10},budget:{...window.budget},translations:message.batch.groups.flatMap(group=>group.blocks.map(block=>({id:block.id,text:'译文：'+block.text+(window.longTranslations && (block.role==='nav'||block.role==='button') ? '（这是一段空间受限时使用浮层显示的较长说明）' : '')})))};
+  }
+  return {ok:true};
+}}};
+</script><script src="/content.js"></script></body></html>

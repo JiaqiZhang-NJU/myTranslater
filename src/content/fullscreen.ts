@@ -1,3 +1,5 @@
+import { queryComposed, parentElement, closestComposed, OWNED_SELECTOR } from '../dom';
+import { RootObserver } from './roots';
 /** Native fullscreen and CSS-based video/stream "web fullscreen". */
 function isFullscreen(): boolean {
   const legacyDocument = document as Document & { webkitFullscreenElement?: Element | null };
@@ -18,7 +20,7 @@ function isFullscreen(): boolean {
   });
 
   // An iframe can host a cross-origin player. Inspect its outer geometry only.
-  for (const media of document.querySelectorAll('video, iframe, embed, object')) {
+  for (const media of queryComposed(document.body, 'video, iframe, embed, object')) {
     const rect = media.getBoundingClientRect();
     const style = getComputedStyle(media);
     if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') continue;
@@ -28,7 +30,7 @@ function isFullscreen(): boolean {
     const visibleHeight = Math.max(0, Math.min(rect.bottom, height) - Math.max(rect.top, 0));
     if (visibleWidth * visibleHeight < width * height * 0.4) continue;
 
-    for (let container: Element | null = media; container && container !== document.body && container !== document.documentElement; container = container.parentElement) {
+    for (let container: Element | null = media; container && container !== document.body && container !== document.documentElement; container = parentElement(container)) {
       if (!coversViewport(container.getBoundingClientRect())) continue;
       const position = getComputedStyle(container).position;
       if (position === 'fixed' || (position === 'absolute' && scrollLocked)) return true;
@@ -59,13 +61,15 @@ export function watchFullscreen(onChange: (fullscreen: boolean) => void): void {
   window.addEventListener('pageshow', schedule);
   document.addEventListener('transitionend', schedule, true);
   document.addEventListener('animationend', schedule, true);
-  new MutationObserver(records => {
+  new RootObserver(records => {
     // Our own hide/status/translation changes must not trigger another scan.
     if (records.some(record => {
       const target = record.target instanceof Element ? record.target : record.target.parentElement;
-      return !target?.closest('#mt-controls, #mt-selection, .mt-translation');
+      if (target && closestComposed(target, OWNED_SELECTOR)) return false;
+      if (record.type === 'childList' && [...record.addedNodes, ...record.removedNodes].every(node => node instanceof Element && node.matches(OWNED_SELECTOR))) return false;
+      return true;
     })) schedule();
-  }).observe(document.documentElement, {
+  }, schedule, schedule, {
     subtree: true, childList: true, attributes: true,
     attributeFilter: ['class', 'style', 'hidden', 'width', 'height']
   });

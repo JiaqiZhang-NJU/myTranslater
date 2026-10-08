@@ -1,6 +1,7 @@
 import type { Role, TextBlock, TextGroup } from '../shared';
 import { BLOCK_MAX_CHARS, BLOCK_MIN_CHARS } from '../shared';
 import { extractInline } from '../inline';
+import { closestComposed, containsComposed, parentElement, renderedChildren, queryComposed, hiddenComposed, editableComposed, type ScanRoot } from '../dom';
 
 export interface PageGroup {
   group: TextGroup;
@@ -59,7 +60,7 @@ export function normalizeText(text: string | null): string {
 function blockedElement(element: Element): boolean {
   if (HARD_BLOCKED_TAGS.has(element.tagName)) return true;
   if (element.hasAttribute('hidden') || element.getAttribute('translate') === 'no' || element.getAttribute('aria-hidden') === 'true') return true;
-  return element.classList.contains('mt-translation') || element.id === 'mt-controls' || element.id === 'mt-selection';
+  return element.classList.contains('mt-translation') || element.hasAttribute('data-mt-owned') || element.id === 'mt-controls' || element.id === 'mt-selection' || element.id === 'mt-layout-panel';
 }
 
 /**
@@ -71,25 +72,11 @@ function blockedElement(element: Element): boolean {
  * outside any editor is ordinary read-only content and is collected normally.
  */
 export function isEditable(element: Element): boolean {
-  let node: Element | null = element;
-  while (node) {
-    const value = node.getAttribute('contenteditable');
-    if (value !== null) {
-      const normalized = value.trim().toLowerCase();
-      if (normalized !== 'false' && normalized !== 'inherit') return true;
-    }
-    node = node.parentElement;
-  }
-  return false;
+  return editableComposed(element);
 }
 
 export function isHidden(element: Element): boolean {
-  const cached = visibilityCache.get(element);
-  if (cached !== undefined) return cached;
-  const style = getComputedStyle(element);
-  const value = style.display === 'none' || style.visibility === 'hidden';
-  visibilityCache.set(element, value);
-  return value;
+  return hiddenComposed(element, visibilityCache);
 }
 
 /** Short numeric badges such as `(34)` stay part of the page, not of the request. */
@@ -110,7 +97,7 @@ function walkText(element: Element, stop: (node: Element) => boolean): string {
     if (node.nodeType === Node.TEXT_NODE) { parts.push(node.textContent ?? ''); return; }
     if (!(node instanceof Element)) return;
     if (node !== element && (skippedForText(node) || stop(node))) return;
-    for (const child of node.childNodes) visit(child);
+    for (const child of renderedChildren(node)) visit(child);
   };
   visit(element);
   return normalizeText(parts.join(''));
@@ -133,14 +120,14 @@ function eligible(element: Element): boolean {
   let node: Element | null = element;
   while (node) {
     if (blockedElement(node)) return false;
-    node = node.parentElement;
+    node = parentElement(node);
   }
   if (isEditable(element) || isHidden(element)) return false;
   return element.getClientRects().length > 0;
 }
 
 function nearestPrecedingHeading(element: Element): string {
-  const area = element.closest('article,section,main') ?? document.body;
+  const area = closestComposed(element, 'article,section,main') ?? document.body;
   let cursor: Element | null = element;
   while (cursor && cursor !== area) {
     let sibling = cursor.previousElementSibling;
@@ -149,7 +136,7 @@ function nearestPrecedingHeading(element: Element): string {
       if (heading && eligible(heading)) return visibleText(heading).slice(0, 180);
       sibling = sibling.previousElementSibling;
     }
-    cursor = cursor.parentElement;
+    cursor = parentElement(cursor);
   }
   return '';
 }
@@ -161,11 +148,11 @@ function nearestPrecedingHeading(element: Element): string {
  * a supporting hint.
  */
 function genericNavigation(anchor: Element): Element | null {
-  let container: Element | null = anchor.parentElement;
-  for (let depth = 0; container && depth < 4; depth++, container = container.parentElement) {
+  let container: Element | null = parentElement(anchor);
+  for (let depth = 0; container && depth < 4; depth++, container = parentElement(container)) {
     if (container === document.body || container === document.documentElement) break;
     if (container.matches(DEFINITE_OWNER_SELECTOR) || !eligible(container)) break;
-    const anchors = [...container.querySelectorAll('a[href],[role="link"]')].filter(item => eligible(item));
+    const anchors = queryComposed(container, 'a[href],[role="link"]').filter(item => eligible(item));
     if (anchors.length < 2 || anchors.length > 40) continue;
     let total = 0;
     let labelsValid = true;
@@ -187,13 +174,13 @@ function genericNavigation(anchor: Element): Element | null {
 /** True when the links occupy repeated siblings or repeated wrapper elements. */
 function repeatedSlots(container: Element, anchors: Element[]): boolean {
   const anchorSet = new Set(anchors);
-  const children = [...container.children].filter(child => !skippedForText(child));
+  const children = renderedChildren(container).filter((child): child is Element => child instanceof Element && !skippedForText(child));
   if (!children.length) return false;
   if (children.every(child => anchorSet.has(child))) return children.length >= 2;
   const signatures = new Set<string>();
   for (const child of children) {
     if (anchorSet.has(child)) { signatures.add('a'); continue; }
-    const inner = [...child.querySelectorAll('a[href],[role="link"]')].filter(item => anchorSet.has(item));
+    const inner = queryComposed(child, 'a[href],[role="link"]').filter(item => anchorSet.has(item));
     if (inner.length !== 1) return false;
     signatures.add(child.tagName);
   }
@@ -202,8 +189,8 @@ function repeatedSlots(container: Element, anchors: Element[]): boolean {
 
 export function navigationFor(element: Element): Element | null {
   const cached = navigationCache.get(element);
-  if (cached !== undefined && (cached === null || (cached.isConnected && cached.contains(element)))) return cached;
-  const semantic = element.closest(NAV_SELECTOR);
+  if (cached && cached.isConnected && containsComposed(cached, element)) return cached;
+  const semantic = closestComposed(element, NAV_SELECTOR);
   const container = semantic ?? genericNavigation(element);
   navigationCache.set(element, container);
   return container;
@@ -213,13 +200,13 @@ function navigationSection(nav: Element): string {
   const labelled = nav.getAttribute('aria-label') ?? '';
   const labelledBy = nav.getAttribute('aria-labelledby');
   if (!labelled && labelledBy) {
-    const target = document.getElementById(labelledBy.split(/\s+/)[0]);
+    const target = (nav.getRootNode() as Document | ShadowRoot).getElementById?.(labelledBy.split(/\s+/)[0]);
     if (target && eligible(target)) return visibleText(target).slice(0, 180);
   }
   if (labelled.trim()) return labelled.trim().slice(0, 180);
-  const heading = nav.querySelector('h1,h2,h3,h4,h5,h6');
+  const heading = queryComposed(nav, 'h1,h2,h3,h4,h5,h6')[0];
   if (heading && eligible(heading)) return visibleText(heading).slice(0, 180);
-  if (nav.matches('footer') || nav.closest('footer')) return 'Footer navigation';
+  if (closestComposed(nav, 'footer')) return 'Footer navigation';
   return nearestPrecedingHeading(nav) || 'Site navigation';
 }
 
@@ -249,17 +236,20 @@ function ownerRole(element: Element): Role | null {
  * nested blocks do not already own.
  */
 function genericOwner(element: Element): boolean {
-  if (!GENERIC_TAGS.has(element.tagName) || !eligible(element)) return false;
-  if (element.closest(INTERACTIVE_SELECTOR) || element.closest(DEFINITE_OWNER_SELECTOR)) return false;
+  if ((!GENERIC_TAGS.has(element.tagName) && !element.tagName.includes('-') && element.tagName !== 'SPAN') || !eligible(element)) return false;
+  if (closestComposed(element, INTERACTIVE_SELECTOR) || closestComposed(element, DEFINITE_OWNER_SELECTOR)) return false;
   const declaredRole = element.getAttribute('role');
   if (declaredRole && declaredRole !== 'none' && declaredRole !== 'presentation') return false;
   return true;
 }
 
-function collectOwned(root: Element, ownerSet: WeakSet<Element>): Map<Element, Text[]> {
+function collectOwned(root: ScanRoot, ownerSet: WeakSet<Element>): Map<Element, Text[]> {
   const result = new Map<Element, Text[]>();
   const stack: Element[] = [];
+  const seen = new Set<Node>();
   const visit = (node: Node): void => {
+    if (seen.has(node)) return;
+    seen.add(node);
     if (node.nodeType === Node.TEXT_NODE) {
       const owner = stack.at(-1);
       if (owner) {
@@ -268,11 +258,12 @@ function collectOwned(root: Element, ownerSet: WeakSet<Element>): Map<Element, T
       }
       return;
     }
+    if (node instanceof ShadowRoot) { for (const child of renderedChildren(node)) visit(child); return; }
     if (!(node instanceof Element)) return;
     if (node !== root && skippedForText(node)) return;
     const pushed = ownerSet.has(node);
     if (pushed) stack.push(node);
-    for (const child of node.childNodes) visit(child);
+    for (const child of renderedChildren(node)) visit(child);
     if (pushed) stack.pop();
   };
   visit(root);
@@ -311,9 +302,10 @@ function carrierFor(element: Element, text: string): Element {
   if (!element.matches(INTERACTIVE_SELECTOR)) return element;
   let carrier = element;
   const visit = (node: Element): void => {
-    for (const child of node.children) {
+    for (const child of renderedChildren(node).filter((item): item is Element => item instanceof Element)) {
       if (!eligible(child) || sourceText(child) !== text) continue;
-      carrier = child;
+      // A populated slot does not render appended fallback children.
+      if (!(child instanceof HTMLSlotElement)) carrier = child;
       visit(child);
       return;
     }
@@ -322,11 +314,11 @@ function carrierFor(element: Element, text: string): Element {
   return carrier;
 }
 
-export function extractPage(root: Element = document.body): PageGroup[] {
+export function extractPage(root: ScanRoot = document.body): PageGroup[] {
   owners = new WeakSet<Element>();
   visibilityCache = new Map<Element, boolean>();
 
-  const candidates = root.matches(CANDIDATE_SELECTOR) ? [root, ...root.querySelectorAll(CANDIDATE_SELECTOR)] : [...root.querySelectorAll(CANDIDATE_SELECTOR)];
+  const candidates = queryComposed(root, `${CANDIDATE_SELECTOR},span,*`).filter(element => element.matches(`${CANDIDATE_SELECTOR},span`) || element.tagName.includes('-'));
   const roles = new Map<Element, Role>();
   for (const element of candidates) {
     const declared = ownerRole(element);
@@ -386,7 +378,7 @@ export function extractPage(root: Element = document.body): PageGroup[] {
     const group: TextGroup = { id: `g${identity(container)}${suffix}`, ...(section ? { section: section.slice(0, 180) } : {}), blocks };
     groups.push({
       group, nodes, carriers, textNodes, sources, revisions: versions, inline,
-      fingerprint: JSON.stringify([group, signatures]),
+      fingerprint: JSON.stringify([document.title.slice(0, 180), group, signatures]),
       top: entries[0].element.getBoundingClientRect().top
     });
   }
@@ -396,9 +388,9 @@ export function extractPage(root: Element = document.body): PageGroup[] {
   for (const element of elements) {
     if (consumed.has(element)) continue;
     const kind = roleOf(element, roles);
-    const table = element.closest('table') as HTMLTableElement | null;
+    const table = closestComposed(element, 'table') as HTMLTableElement | null;
     if (table && (kind === 'cell' || kind === 'table-header')) {
-      const row = element.closest('tr') as HTMLTableRowElement;
+      const row = closestComposed(element, 'tr') as HTMLTableRowElement;
       if (!supportedTable(table)) { consumed.add(element); continue; }
       const cells = [...row.cells].filter(cell => selected.has(cell) && !consumed.has(cell));
       cells.forEach(cell => consumed.add(cell));

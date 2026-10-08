@@ -1,4 +1,6 @@
 import { SELECTION_MAX_CHARS, SELECTION_MIN_CHARS } from '../shared';
+import { closestComposed, editableComposed, hiddenComposed, parentElement, OWNED_SELECTOR } from '../dom';
+import { visibleText } from './extract';
 
 export interface SelectionOutcome {
   ok: boolean;
@@ -231,14 +233,14 @@ export function createSelectionPanel(options: SelectionPanelOptions): SelectionP
       return;
     }
     result.textContent = outcome.error || '翻译失败，请稍后重试';
-    if (outcome.kind === 'quota') {
+    if (outcome.kind === 'budget') {
       meta.textContent = '本页翻译预算已用完';
       state('notice');
       return;
     }
     if (outcome.kind === 'cancelled') {
       meta.textContent = '已取消';
-      state('notice');
+      state('failure');
       return;
     }
     meta.textContent = `${options.providerLabel()} · 失败`;
@@ -267,9 +269,12 @@ export function createSelectionPanel(options: SelectionPanelOptions): SelectionP
     }
     const selection = window.getSelection();
     const anchor = selection?.anchorNode;
-    const anchorElement = anchor instanceof Element ? anchor : anchor?.parentElement ?? null;
-    const block = anchorElement?.closest('p,li,h1,h2,h3,h4,h5,h6,td,th,dt,dd,figcaption,blockquote,div,span,label,summary,a,button') ?? null;
-    const near = block ? block.textContent?.replace(/\s+/g, ' ').trim() ?? '' : '';
+    const anchorElement = anchor instanceof Element ? anchor : anchor ? parentElement(anchor) : null;
+    if (anchorElement && (editableComposed(anchorElement) || hiddenComposed(anchorElement) || closestComposed(anchorElement, `${OWNED_SELECTOR},input,textarea,select,[translate="no"]`))) {
+      current = null; result.textContent = '此选区位于编辑、隐藏或不翻译区域，不会发送。'; state('blocked'); showPanel(); return;
+    }
+    const block = anchorElement ? closestComposed(anchorElement, 'p,li,h1,h2,h3,h4,h5,h6,td,th,dt,dd,figcaption,blockquote,div,span,label,summary,a,button') : null;
+    const near = block ? visibleText(block) : '';
     const selected = selection?.toString().replace(/\s+/g, ' ').trim() ?? '';
     const context = selected && near.includes(selected) && near.length > text.length ? near.slice(0, 120) : '';
     if (text.length < SELECTION_MIN_CHARS) {

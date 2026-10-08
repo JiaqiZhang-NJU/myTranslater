@@ -10,7 +10,10 @@ h1 small { color: #65728a; font-size: 13px; font-weight: 500; }
 h2 { font-size: 18px; margin-top: 30px; }
 p { margin: 9px 0 15px; }
 label { display: block; font-weight: 600; margin-bottom: 7px; }
-input[type=password], input[type=url], input[list] { width: 100%; box-sizing: border-box; border: 1px solid #aeb9cc; border-radius: 7px; padding: 11px; font: inherit; }
+input[type=password], input[type=url], input[type=number], input[list] { width: 100%; box-sizing: border-box; border: 1px solid #aeb9cc; border-radius: 7px; padding: 11px; font: inherit; }
+input:disabled { background: #eef1f6; color: #65728a; }
+.budget-settings { border: 1px solid #d5deed; border-radius: 9px; padding: 0 16px 8px; margin: 24px 0 20px; }
+.budget-settings legend { font-weight: 600; padding: 0 5px; }
 .provider-choice { display: flex; gap: 22px; border: 0; padding: 0; margin: 18px 0 22px; }
 .provider-choice legend { font-weight: 600; margin-bottom: 8px; }
 .provider-choice label { font-weight: 400; }

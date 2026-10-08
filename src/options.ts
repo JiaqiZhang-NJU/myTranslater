@@ -13,6 +13,14 @@ const ollamaSettings = document.getElementById('ollama-settings') as HTMLDivElem
 const statusElement = document.getElementById('status') as HTMLParagraphElement;
 const testButton = document.getElementById('test') as HTMLButtonElement;
 const saveButton = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+const budgetFields = {
+  deepseek: { enabled: document.getElementById('deepseek-budget-enabled') as HTMLInputElement, limit: document.getElementById('deepseek-budget-limit') as HTMLInputElement },
+  ollama: { enabled: document.getElementById('ollama-budget-enabled') as HTMLInputElement, limit: document.getElementById('ollama-budget-limit') as HTMLInputElement }
+};
+function updateBudget(): void {
+  for (const fields of Object.values(budgetFields)) fields.limit.disabled = !fields.enabled.checked;
+}
+for (const fields of Object.values(budgetFields)) fields.enabled.addEventListener('change', updateBudget);
 document.getElementById('build-version')!.textContent = `v${chrome.runtime.getManifest().version}`;
 document.getElementById('ollama-extension-origin')!.textContent = `chrome-extension://${chrome.runtime.id}`;
 
@@ -22,8 +30,10 @@ function selectedProvider(): 'deepseek' | 'ollama' {
   return (form.querySelector('input[name="provider"]:checked') as HTMLInputElement)?.value === 'ollama' ? 'ollama' : 'deepseek';
 }
 function fields() {
+  const budget = (provider: 'deepseek' | 'ollama') => ({ enabled: budgetFields[provider].enabled.checked, limit: Number(budgetFields[provider].limit.value) });
   return { provider: selectedProvider(), apiKey: keyInput.value, remember: rememberInput.checked,
-    ollamaOrigin: originInput.value, ollamaModel: modelInput.value };
+    ollamaOrigin: originInput.value, ollamaModel: modelInput.value,
+    budgetSettings: { deepseek: budget('deepseek'), ollama: budget('ollama') } };
 }
 function updateProvider(): void {
   const local = selectedProvider() === 'ollama';
@@ -33,15 +43,22 @@ function updateProvider(): void {
 }
 for (const radio of form.querySelectorAll<HTMLInputElement>('input[name="provider"]')) radio.addEventListener('change', updateProvider);
 
+saveButton.disabled = true;
 void loadSettings().then(result => {
   keyInput.value = result.apiKey;
   rememberInput.checked = result.remember;
   originInput.value = result.ollamaOrigin;
   modelInput.value = result.ollamaModel;
+  for (const provider of ['deepseek', 'ollama'] as const) {
+    budgetFields[provider].enabled.checked = result.budgetSettings[provider].enabled;
+    budgetFields[provider].limit.value = String(result.budgetSettings[provider].limit);
+  }
+  updateBudget();
   const radio = form.querySelector<HTMLInputElement>(`input[name="provider"][value="${result.provider}"]`);
   if (radio) radio.checked = true;
   updateProvider();
-}).catch(error => setStatus(errorMessage(error, '暂时无法读取设置，请重新打开此页')));
+}).catch(error => setStatus(errorMessage(error, '暂时无法读取设置，请重新打开此页')))
+  .finally(() => { saveButton.disabled = false; });
 
 form.addEventListener('submit', event => {
   event.preventDefault();

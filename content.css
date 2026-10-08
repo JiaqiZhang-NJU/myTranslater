@@ -28,7 +28,7 @@
   box-shadow: -2px 2px 10px #0003 !important;
   font: 700 18px system-ui, sans-serif !important;
   cursor: pointer !important;
-  touch-action: manipulation !important;
+  touch-action: none !important;
   user-select: none !important;
 }
 #mt-controls .mt-ball:hover { background: #2547bd !important; }
@@ -37,11 +37,13 @@
 #mt-controls .mt-panel {
   position: absolute !important;
   right: 36px !important;
-  top: 50% !important;
+  top: var(--mt-panel-top, 24px) !important;
   bottom: auto !important;
   box-sizing: border-box !important;
   width: max-content !important;
   max-width: min(310px, calc(100vw - 44px)) !important;
+  max-height: calc(100vh - 16px) !important;
+  overflow: auto !important;
   padding: 8px 10px !important;
   border-radius: 9px !important;
   background: #fff !important;
@@ -54,16 +56,16 @@
   opacity: 0 !important;
   visibility: hidden !important;
   pointer-events: none !important;
-  transform: translate(5px, -50%) !important;
-  transition: opacity .16s ease, transform .16s ease, visibility .16s !important;
+  transform: translate(5px, var(--mt-panel-y, -50%)) !important;
+  transition: opacity .16s ease, visibility .16s !important;
 }
-#mt-controls:hover:not(.mt-menu-open) .mt-panel,
-#mt-controls:focus-within:not(.mt-menu-open) .mt-panel,
-#mt-controls.mt-notice:not(.mt-menu-open) .mt-panel {
+#mt-controls:hover:not(.mt-menu-open):not(.mt-dragging) .mt-panel,
+#mt-controls:focus-within:not(.mt-menu-open):not(.mt-dragging) .mt-panel,
+#mt-controls.mt-notice:not(.mt-menu-open):not(.mt-dragging) .mt-panel {
   opacity: 1 !important;
   visibility: visible !important;
   pointer-events: auto !important;
-  transform: translate(0, -50%) !important;
+  transform: translate(0, var(--mt-panel-y, -50%)) !important;
 }
 #mt-controls .mt-panel button {
   border: 0 !important;
@@ -78,8 +80,10 @@
 #mt-controls .mt-context-menu {
   position: fixed !important;
   z-index: 2147483647 !important;
-  min-width: 190px !important;
+  min-width: min(190px, calc(100vw - 16px)) !important;
   max-width: calc(100vw - 16px) !important;
+  max-height: calc(100vh - 16px) !important;
+  overflow: auto !important;
   padding: 4px !important;
   border-radius: 8px !important;
   background: #fff !important;
@@ -98,7 +102,7 @@
   color: inherit !important;
   font: inherit !important;
   text-align: left !important;
-  white-space: nowrap !important;
+  white-space: normal !important;
   cursor: pointer !important;
 }
 #mt-controls .mt-context-menu button:hover,
@@ -113,8 +117,15 @@
   font-size: .94em !important;
   line-height: 1.55 !important;
   white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
 }
 #mt-controls .mt-translation { display: none !important; }
+.mt-translation[data-mt-compact] {
+  display: inline !important; width: auto !important;
+  margin: 0 0 0 .4em !important; padding: 0 !important; border: 0 !important;
+  color: inherit !important; font-size: .78em !important;
+  line-height: inherit !important; white-space: normal !important;
+}
 a > .mt-translation, button > .mt-translation, li > .mt-translation, td > .mt-translation, th > .mt-translation,
 label > .mt-translation, summary > .mt-translation, caption > .mt-translation, figcaption > .mt-translation {
   display: block !important;
@@ -205,10 +216,26 @@ label > .mt-translation, summary > .mt-translation, caption > .mt-translation, f
   font: inherit !important;
   font-size: 12px !important;
   cursor: pointer !important;
-  white-space: nowrap !important;
+  white-space: normal !important;
+  overflow-wrap: anywhere !important;
 }
 #mt-selection .mt-sel-actions button[hidden] { display: none !important; }
 #mt-selection .mt-sel-actions button:hover,
 #mt-selection .mt-sel-actions button:focus-visible,
 #mt-selection .mt-sel-close:hover,
 #mt-selection .mt-sel-close:focus-visible { background: #e8eefc !important; }
+
+#mt-layout-panel {
+  position: fixed !important; z-index: 2147483647 !important;
+  box-sizing: border-box !important; max-width: calc(100vw - 24px) !important;
+  max-height: calc(100vh - 24px) !important; overflow: auto !important;
+  padding: 12px !important; border-radius: 10px !important;
+  background: #fff !important; color: #1d2330 !important;
+  box-shadow: 0 6px 24px #0004 !important;
+  font: 13px/1.5 system-ui, sans-serif !important; user-select: text !important;
+  white-space: pre-wrap !important; overflow-wrap: anywhere !important;
+}
+#mt-layout-panel[hidden] { display: none !important; }
+#mt-layout-panel p { margin: 6px 0 !important; font: inherit !important; color: inherit !important; }
+#mt-layout-panel .mt-layout-source { color: #5c6675 !important; font-size: 12px !important; }
+#mt-layout-panel button { font: inherit !important; cursor: pointer !important; color: #3156d5 !important; background: #edf2ff !important; border: 0 !important; border-radius: 5px !important; padding: 4px 9px !important; }

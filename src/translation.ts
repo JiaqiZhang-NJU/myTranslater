@@ -2,7 +2,7 @@ import type { TranslationBatch } from './shared';
 import { validInlineMarkers } from './inline';
 
 export class TranslationError extends Error {
-  readonly kind: 'key' | 'quota' | 'rate' | 'network' | 'response' | 'cancelled' | 'config';
+  readonly kind: 'key' | 'budget' | 'quota' | 'rate' | 'network' | 'response' | 'cancelled' | 'config';
   constructor(message: string, kind: TranslationError['kind']) {
     super(message);
     this.kind = kind;

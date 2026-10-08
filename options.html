@@ -11,7 +11,7 @@
     <h1>myTranslater <small id="build-version"></small></h1>
     <div class="entry-notice">
       <strong>悬浮球在哪里？</strong>
-      <p>这里是设置页，不显示悬浮球。保存后打开或刷新一个普通网页（例如 <a href="https://example.com/" target="_blank" rel="noopener noreferrer">示例网页</a>），在右下角点击“译”。也可以在网页中点击浏览器工具栏上的 myTranslater 图标开始翻译。</p>
+      <p>这里是设置页，不显示悬浮球。保存后打开或刷新一个普通网页（例如 <a href="https://example.com/" target="_blank" rel="noopener noreferrer">示例网页</a>），在右侧点击“译”。按钮可沿右侧上下拖动，位置按网站记忆；全屏时自动隐藏。也可以点击浏览器工具栏上的 myTranslater 图标开始翻译。</p>
       <p>如果仍看不到，请检查扩展的“网站访问权限”，允许在该网站运行，再刷新网页。浏览器内部页面（如 chrome://）不支持注入悬浮球。</p>
       <p>只想翻译一小段文字时，选中网页上的文字，点右键选择「用 myTranslater 翻译所选文字」。这个入口不需要先开启整页翻译。</p>
     </div>
@@ -45,6 +45,17 @@
         <p class="hint">只调用本机 Ollama 接口，不需要 DeepSeek API Key。若要确保 Ollama 自身不使用云模型，请在 Ollama 中关闭 Cloud 功能。</p>
         <p class="hint">如果测试出现 HTTP 403，请把 <code id="ollama-extension-origin"></code> 加入 Windows 用户环境变量 <code>OLLAMA_ORIGINS</code>，彻底退出并重启 Ollama。只放行此扩展即可。</p>
       </div>
+      <fieldset class="budget-settings">
+        <legend>页面预算</legend>
+        <label class="check"><input id="deepseek-budget-enabled" type="checkbox" checked> 限制 DeepSeek 每页用量</label>
+        <label for="deepseek-budget-limit">DeepSeek 每页 token 上限</label>
+        <input id="deepseek-budget-limit" type="number" min="1" step="1" value="30000" required>
+        <label class="check"><input id="ollama-budget-enabled" type="checkbox" checked> 限制 Ollama 每页用量</label>
+        <label for="ollama-budget-limit">Ollama 每页 token 上限</label>
+        <input id="ollama-budget-limit" type="number" min="1" step="1" value="30000" required>
+        <p class="hint">两种方式分别计数，整页与划词共用本页额度。token 上限控制请求量，不代表账单金额；发出请求前会预留预计用量，所以可能在达到显示上限前暂停。</p>
+        <p class="hint">修改某种方式的预算后，从下一次请求生效，已用量不会清零，在途请求仍会结算；该方式此前手动追加的额度会清除。原样保存不影响当前额度。关闭限制后仍统计用量，重新开启时继续累计。已暂停的页面需点继续；“增加预算并继续”每次为本页追加一份这里填写的额度。</p>
+      </fieldset>
       <div class="actions">
         <button type="submit">保存</button>
         <button id="test" type="button">测试 DeepSeek</button>
@@ -55,7 +66,8 @@
       <h2>发送内容与费用</h2>
       <p>点击悬浮球后，插件会把当前页面的标题、待翻译文本和少量章节信息发送给所选方式。DeepSeek 请求可能产生 API 费用；Ollama 请求发往本机服务，占用本机算力。连接测试会发送一个固定的简短样例。已经发出的 DeepSeek 请求即使取消，仍可能计费。</p>
       <p>使用划词翻译时，插件会把选中的文字、页面标题，以及选区附近最多约 120 个字符的可见语境发送给所选方式。输入框、密码框、可编辑区域和子框架内的选区不会被发送；超过 2,000 字时会先提示缩小选区，不会静默截断。划词结果只显示在页面内的小面板里，不会改动网页内容。</p>
-      <p>当前开发版支持标题、段落、列表、普通导航（原生导航、面包屑、分页、标签页、菜单和自定义导航容器）、按钮、label/summary/caption 标签，以及具有明确表头的简单表格，并可跟进页面动态新增的内容。合并单元格、复杂网格、图片、PDF、iframe 和 Shadow DOM 暂不支持。整页翻译与划词翻译共用同一份本页预算。扩展申请网站读取权限以显示悬浮球并读取需要翻译的文本。</p>
+      <p>当前开发版支持标题、段落、列表、普通导航、按钮、标签、简单表格及开放式 Shadow DOM，并可跟进动态评论和插槽变化。空间不足时通过悬停、键盘聚焦或“查看受限译文”显示浮层。关闭翻译后保留当前页面已成功的译文缓存，再次开启时复用；刷新、关闭或切换页面后清除。右键按钮可“重新翻译当前页”，会清空本页缓存并重新消耗用量。</p>
+      <p>关闭式 Shadow DOM、iframe 内容、合并单元格、复杂网格、图片、PDF 和字幕暂不支持。整页与划词共用本页预算；两种翻译方式分别累计。扩展申请网站读取权限以显示按钮并读取需要翻译的文本。译文缓存仅在本页内存中，按钮高度按网站保存在本机扩展存储。</p>
     </section>
     <footer>项目地址：<a href="https://github.com/JiaqiZhang-NJU/myTranslater" target="_blank" rel="noopener noreferrer">GitHub · myTranslater</a></footer>
   </main>

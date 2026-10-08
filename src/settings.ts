@@ -39,8 +39,8 @@ export function validateSettingsInput(raw: { provider?: unknown; ollamaOrigin?: 
 
 export function providerIdentity(settings: ProviderSettings): string {
   return settings.provider === 'ollama'
-    ? `ollama:${settings.ollamaOrigin}:${settings.ollamaModel}:v${settings.version}`
-    : `deepseek:deepseek-flash:v${settings.version}`;
+    ? `ollama:${settings.ollamaOrigin}:${settings.ollamaModel}`
+    : 'deepseek:deepseek-flash';
 }
 
 export function translateConfigured(settings: ProviderSettings, apiKey: string, batch: TranslationBatch, signal: AbortSignal): Promise<TranslationResult> {

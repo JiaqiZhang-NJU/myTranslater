@@ -2,6 +2,7 @@ import { listOllamaModels } from './ollama';
 import { parseProviderSettings, translateConfigured, validateSettingsInput, type ProviderKind } from './settings';
 import type { TranslationBatch } from './shared';
 import { TranslationError } from './translation';
+import { parseBudgetSettings, validateBudgetSettings, type BudgetSettings } from './budget';
 
 export interface SettingsInput {
   provider: ProviderKind;
@@ -9,14 +10,15 @@ export interface SettingsInput {
   remember: boolean;
   ollamaOrigin: string;
   ollamaModel: string;
+  budgetSettings?: BudgetSettings;
 }
 
 export async function loadSettings() {
   const [local, session] = await Promise.all([
-    chrome.storage.local.get(['apiKey', 'remember', 'provider', 'ollamaOrigin', 'ollamaModel', 'settingsVersion']),
+    chrome.storage.local.get(['apiKey', 'remember', 'provider', 'ollamaOrigin', 'ollamaModel', 'settingsVersion', 'budgetSettings']),
     chrome.storage.session.get('apiKey')
   ]);
-  return { apiKey: session.apiKey ?? local.apiKey ?? '', remember: local.remember === true, ...parseProviderSettings(local) };
+  return { apiKey: session.apiKey ?? local.apiKey ?? '', remember: local.remember === true, ...parseProviderSettings(local), budgetSettings: parseBudgetSettings(local.budgetSettings) };
 }
 
 export async function saveSettings(input: SettingsInput): Promise<void> {
@@ -24,16 +26,19 @@ export async function saveSettings(input: SettingsInput): Promise<void> {
     throw new TranslationError('设置无效', 'config');
   }
   const provider = validateSettingsInput(input);
-  const previous = parseProviderSettings(await chrome.storage.local.get(['provider', 'ollamaOrigin', 'ollamaModel', 'settingsVersion']));
-  const settingsVersion = previous.version + 1;
+  const previous = await loadSettings();
   const apiKey = input.apiKey.trim();
+  const changed = provider.provider !== previous.provider || provider.ollamaOrigin !== previous.ollamaOrigin ||
+    provider.ollamaModel !== previous.ollamaModel || apiKey !== previous.apiKey;
+  const settingsVersion = previous.version + (changed ? 1 : 0);
+  const budgetSettings = input.budgetSettings === undefined ? previous.budgetSettings : validateBudgetSettings(input.budgetSettings);
   if (input.remember) {
-    await chrome.storage.local.set({ ...provider, settingsVersion, apiKey, remember: true });
+    await chrome.storage.local.set({ ...provider, settingsVersion, budgetSettings, apiKey, remember: true });
     await chrome.storage.session.remove('apiKey');
   } else {
     await chrome.storage.session.set({ apiKey });
     await chrome.storage.local.remove('apiKey');
-    await chrome.storage.local.set({ ...provider, settingsVersion, remember: false });
+    await chrome.storage.local.set({ ...provider, settingsVersion, budgetSettings, remember: false });
   }
 }
 

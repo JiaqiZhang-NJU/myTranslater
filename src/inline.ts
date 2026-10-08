@@ -1,9 +1,10 @@
+import { closestComposed, hiddenComposed, editableComposed, renderedChildren } from './dom';
 const marker = /⟦(\/?)i(\d+)⟧/g;
 const inlineTags = new Set(['A', 'STRONG', 'EM', 'B', 'I']);
 // This list must match the extraction rule in `content/extract.ts`: only a
 // declared editable region is skipped, so a stand-alone
 // `contenteditable="false"` element is still ordinary read-only content.
-const skipped = 'script,style,noscript,pre,code,textarea,input,select,[contenteditable]:not([contenteditable="false"]):not([contenteditable="inherit"]),[translate="no"],[aria-hidden="true"],[hidden],template,.mt-translation,#mt-controls,#mt-selection';
+const skipped = 'script,style,noscript,pre,code,textarea,input,select,[translate="no"],[aria-hidden="true"],[hidden],template,.mt-translation,[data-mt-owned],#mt-controls,#mt-selection,#mt-layout-panel';
 
 export function withoutInlineMarkers(text: string): string {
   return text.replace(marker, '').replace(/\s+/g, ' ').trim();
@@ -21,15 +22,14 @@ export function extractInline(element: Element, stop?: (node: Element) => boolea
   let index = 0;
   function walk(node: Node): void {
     if (node.nodeType === Node.TEXT_NODE) { parts.push(node.textContent ?? ''); return; }
-    if (!(node instanceof Element) || node.closest(skipped)) return;
+    if (!(node instanceof Element) || closestComposed(node, skipped) || editableComposed(node)) return;
     if (node !== element && stop?.(node)) return;
     if (node !== element && element.matches('li,td,th') && node.matches(element.matches('li') ? 'li' : 'td,th')) return;
-    const style = getComputedStyle(node);
-    if (style.display === 'none' || style.visibility === 'hidden') return;
+    if (hiddenComposed(node)) return;
     const wrapped = node !== element && inlineTags.has(node.tagName);
     const key = wrapped ? `i${++index}` : '';
     if (wrapped) { elements.set(key, node); parts.push(`⟦${key}⟧`); }
-    for (const child of node.childNodes) walk(child);
+    for (const child of renderedChildren(node)) walk(child);
     if (wrapped) parts.push(`⟦/${key}⟧`);
   }
   walk(element);
