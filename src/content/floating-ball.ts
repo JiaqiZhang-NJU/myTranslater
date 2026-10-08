@@ -1,3 +1,5 @@
+import { watchFullscreen } from './fullscreen';
+
 export interface Controls {
   setActive(active: boolean): void;
   setStatus(text: string): void;
@@ -52,12 +54,11 @@ export function createControls(onToggle: () => void, onRetry: () => void, onSett
   document.documentElement.append(root);
   let statusText = status.textContent ?? '';
   let noticeTimer: number | undefined;
-  let startX = 0;
-  let startY = 0;
-  let originX = 0;
-  let originY = 0;
-  let moved = false;
   function closeMenu(): void { menu.hidden = true; root.classList.remove('mt-menu-open'); }
+  watchFullscreen(fullscreen => {
+    if (fullscreen) closeMenu();
+    root.classList.toggle('mt-fullscreen-hidden', fullscreen);
+  });
   ball.addEventListener('contextmenu', event => {
     event.preventDefault();
     event.stopPropagation();
@@ -76,30 +77,7 @@ export function createControls(onToggle: () => void, onRetry: () => void, onSett
   document.addEventListener('keydown', event => {
     if (event.key === 'Escape' && !menu.hidden) { closeMenu(); ball.focus(); }
   });
-  ball.addEventListener('pointerdown', event => {
-    if (event.button !== 0) return;
-    startX = event.clientX;
-    startY = event.clientY;
-    originX = root.getBoundingClientRect().left;
-    originY = root.getBoundingClientRect().top;
-    moved = false;
-    ball.setPointerCapture(event.pointerId);
-  });
-  ball.addEventListener('pointermove', event => {
-    if (!ball.hasPointerCapture(event.pointerId)) return;
-    const dx = event.clientX - startX;
-    const dy = event.clientY - startY;
-    if (Math.hypot(dx, dy) > 5) moved = true;
-    if (!moved) return;
-    const x = Math.min(Math.max(0, originX + dx), Math.max(0, window.innerWidth - root.offsetWidth));
-    const y = Math.min(Math.max(0, originY + dy), Math.max(0, window.innerHeight - root.offsetHeight));
-    root.style.setProperty('left', `${x}px`, 'important');
-    root.style.setProperty('top', `${y}px`, 'important');
-    root.style.setProperty('right', 'auto', 'important');
-    root.style.setProperty('bottom', 'auto', 'important');
-  });
   ball.addEventListener('click', () => {
-    if (moved) { moved = false; return; }
     closeMenu();
     onToggle();
   });

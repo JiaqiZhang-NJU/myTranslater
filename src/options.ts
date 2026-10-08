@@ -47,7 +47,7 @@ form.addEventListener('submit', event => {
   event.preventDefault();
   saveButton.disabled = true;
   void saveSettings(fields())
-    .then(() => setStatus('已保存。打开或刷新普通网页，在右下角点击“译”，也可点击工具栏插件图标。'))
+    .then(() => setStatus('已保存。打开或刷新普通网页，在右侧中间点击“译”，也可点击工具栏插件图标。'))
     .catch(error => setStatus(errorMessage(error, '保存失败，请稍后重试')))
     .finally(() => { saveButton.disabled = false; });
 });

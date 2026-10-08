@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Fullscreen controls fixture</title>
+  <link rel="stylesheet" href="/content.css">
+  <style>
+    .player { width: 480px; height: 270px; background: black; }
+    .player video { display: block; width: 100%; height: 100%; object-fit: contain; }
+    .player.web-screen { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 99999; }
+    .player.theater { position: fixed; inset: 0 0 auto; width: 100vw; height: 70vh; }
+    .player.absolute-screen { position: absolute; inset: 0; width: 100vw; height: 100vh; }
+    .player.inline-fill { width: 100vw; height: 100vh; }
+  </style>
+</head>
+<body>
+  <p>A video player on a normal web page.</p>
+  <div id="player" class="player"><video id="video" controls></video></div>
+  <script>
+    if (location.search === '?fullscreen') document.querySelector('#player').classList.add('web-screen');
+    window.requests = [];
+    window.cancels = [];
+    window.chrome = { runtime: {
+      id: 'smoke-extension',
+      onMessage: { addListener: listener => {
+        window.toggleFromToolbar = () => listener({ type: 'TOGGLE_TRANSLATION' }, { id: 'smoke-extension' }, () => {});
+      } },
+      sendMessage: async message => {
+        if (message.type === 'GET_PROVIDER_STATUS') return { ok: true, ready: true, provider: 'deepseek', identity: 'fixture', settingsVersion: 1 };
+        if (message.type === 'CANCEL') window.cancels.push(message.sessionId);
+        if (message.type === 'TRANSLATE') {
+          window.requests.push(message.batch);
+          return { ok: true, usage: { totalTokens: 10 }, translations: message.batch.groups.flatMap(group => group.blocks.map(block => ({ id: block.id, text: '译文：' + block.text }))) };
+        }
+        return { ok: true };
+      }
+    } };
+  </script>
+  <script src="/content.js"></script>
+</body>
+</html>

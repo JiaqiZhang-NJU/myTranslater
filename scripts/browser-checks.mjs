@@ -108,8 +108,8 @@ try {
       socket.send(JSON.stringify({ id, method, params }));
     });
   }
-  async function evaluate(expression) {
-    const result = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+  async function evaluate(expression, userGesture = false) {
+    const result = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true, userGesture });
     if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text);
     return result.result.value;
   }
@@ -146,6 +146,95 @@ try {
       console.log(`FAIL ${name}\n     ${String(error.message).split('\n').join('\n     ')}`);
     }
   }
+
+  const controlsVisible = `getComputedStyle(document.querySelector('#mt-controls')).display !== 'none'`;
+  await check('controls: fixed edge tab, no dragging, keyboard focus and menu', async () => {
+    await open('/fullscreen.html');
+    const geometry = `(() => {
+      const rect = document.querySelector('.mt-ball').getBoundingClientRect();
+      return { right: rect.right, top: rect.top, width: rect.width, height: rect.height, viewportWidth: innerWidth, viewportHeight: innerHeight };
+    })()`;
+    const before = await evaluate(geometry);
+    assert.equal(before.right, before.viewportWidth, 'tab is attached to the right edge');
+    assert.equal(before.width, 36);
+    assert.equal(before.height, 48);
+    assert.equal(before.top, (before.viewportHeight - before.height) / 2);
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: before.right - 18, y: before.top + 24, button: 'left', clickCount: 1 });
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: before.right - 150, y: before.top + 100, button: 'left', buttons: 1 });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: before.right - 150, y: before.top + 100, button: 'left', clickCount: 1 });
+    assert.deepEqual(await evaluate(geometry), before, 'dragging cannot move the tab');
+    await evaluate(`document.querySelector('.mt-ball').focus()`);
+    assert.equal(await evaluate(`getComputedStyle(document.querySelector('.mt-panel')).visibility`), 'visible', 'keyboard focus exposes actions');
+    await evaluate(`document.querySelector('.mt-ball').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))`);
+    const menu = await evaluate(`(() => { const r = document.querySelector('.mt-context-menu').getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: innerWidth, height: innerHeight }; })()`);
+    assert.ok(menu.left >= 0 && menu.right <= menu.width && menu.top >= 0 && menu.bottom <= menu.height, 'menu stays inside viewport');
+  });
+
+  await check('controls: real native document, video and iframe fullscreen', async () => {
+    await open('/fullscreen.html');
+    await evaluate(`window.toggleFromToolbar()`);
+    await until(`document.querySelector('.mt-ball').classList.contains('mt-active')`);
+    for (const selector of ['html', '#video', '#frame']) {
+      if (selector === '#frame') await evaluate(`const frame = document.createElement('iframe'); frame.id = 'frame'; frame.srcdoc = '<video controls></video>'; document.body.append(frame)`);
+      await evaluate(`document.querySelector('${selector}').requestFullscreen()`, true);
+      assert.equal(await evaluate(`Boolean(document.fullscreenElement)`), true, 'native API really entered fullscreen');
+      await until(`!(${controlsVisible})`);
+      await evaluate(`document.exitFullscreen()`);
+      await until(controlsVisible);
+    }
+    assert.equal(await evaluate(`document.querySelector('.mt-ball').classList.contains('mt-active')`), true, 'translation stays active');
+    assert.equal(await evaluate('window.cancels.length'), 0, 'automatic hiding never cancels translation');
+  });
+
+  await check('controls: CSS web fullscreen, initial fullscreen, resize and player removal', async () => {
+    await open('/fullscreen.html?fullscreen');
+    await until(`!(${controlsVisible})`);
+    await evaluate(`document.querySelector('#player').className = 'player'`);
+    await until(controlsVisible);
+    for (const mode of ['theater', 'inline-fill']) {
+      await evaluate(`document.querySelector('#player').className = 'player ${mode}'`);
+      await wait(150);
+      assert.equal(await evaluate(controlsVisible), true, `${mode} is not fullscreen`);
+    }
+    await evaluate(`document.body.style.overflow = 'hidden'; document.querySelector('#player').className = 'player absolute-screen'`);
+    await until(`!(${controlsVisible})`);
+    await evaluate(`document.body.style.overflow = ''; document.querySelector('#player').className = 'player'`);
+    await until(controlsVisible);
+    await evaluate(`document.documentElement.style.overflowY = 'scroll'; document.querySelector('#player').className = 'player web-screen'; document.querySelector('#player').style.cssText = 'width:auto;height:auto'`);
+    await until(`!(${controlsVisible})`, 'inset fullscreen with a visible scrollbar');
+    await evaluate(`document.documentElement.style.overflowY = ''; document.querySelector('#player').style.cssText = ''; document.querySelector('#player').className = 'player'`);
+    await until(controlsVisible);
+    // Cross-origin player contents need no access: the iframe's geometry suffices.
+    await evaluate(`document.querySelector('#player').innerHTML = '<iframe title="Player" src="about:blank" style="width:100%;height:100%;border:0"></iframe>'; document.querySelector('#player').className = 'player web-screen'`);
+    await until(`!(${controlsVisible})`);
+    await send('Emulation.setDeviceMetricsOverride', { width: 900, height: 600, deviceScaleFactor: 1, mobile: false });
+    await wait(150);
+    assert.equal(await evaluate(controlsVisible), false, 'fullscreen remains hidden after resize');
+    await evaluate(`document.querySelector('#player').remove()`);
+    await until(controlsVisible);
+    const edge = await evaluate(`document.querySelector('.mt-ball').getBoundingClientRect().right === innerWidth`);
+    assert.equal(edge, true, 'restored tab still touches the edge');
+    await send('Emulation.clearDeviceMetricsOverride');
+  });
+
+  await check('controls: fullscreen preserves manual hide and closes menus', async () => {
+    await open('/fullscreen.html');
+    await evaluate(`document.querySelector('.mt-ball').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })); document.querySelector('#player').className = 'player web-screen'`);
+    await until(`!(${controlsVisible})`);
+    assert.equal(await evaluate(`document.querySelector('.mt-context-menu').hidden`), true);
+    await evaluate(`document.querySelector('#player').className = 'player'`);
+    await until(controlsVisible);
+    await evaluate(`document.querySelector('.mt-context-menu button').click(); document.querySelector('#player').className = 'player web-screen'`);
+    await until(`document.querySelector('#mt-controls').classList.contains('mt-fullscreen-hidden')`);
+    await evaluate(`document.querySelector('#player').className = 'player'`);
+    await until(`!document.querySelector('#mt-controls').classList.contains('mt-fullscreen-hidden')`);
+    assert.equal(await evaluate(controlsVisible), false, 'exiting fullscreen preserves manual hide');
+    await evaluate(`window.toggleFromToolbar(); document.querySelector('#player').className = 'player web-screen'`);
+    await until(`document.querySelector('#mt-controls').classList.contains('mt-fullscreen-hidden')`);
+    assert.equal(await evaluate(controlsVisible), false, 'toolbar cannot reveal controls over fullscreen');
+    await evaluate(`document.querySelector('#player').className = 'player'`);
+    await until(controlsVisible);
+  });
 
   await check('coverage: event navigation, ARIA controls, labels and exclusions', async () => {
     await open('/coverage.html');

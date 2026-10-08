@@ -169,7 +169,8 @@ const base = `http://127.0.0.1:${server.address().port}`;
 
 try {
   const info = session.manifest;
-  assert.equal(info.version, '0.4.0', 'the loaded manifest reports the released version');
+  const expectedManifest = JSON.parse(await readFile(join(root, 'manifest.json'), 'utf8'));
+  assert.equal(info.version, expectedManifest.version, 'the loaded manifest reports the released version');
   assert.deepEqual([...info.permissions].sort(), ['contextMenus', 'storage']);
 
   const menu = await session.client.evaluate(`(async () => {
@@ -196,10 +197,12 @@ try {
   }
   assert.equal(injected, true, 'the content script and its stylesheet were not injected into an ordinary page');
   const ballStyle = await pageClient.evaluate(`(() => {
-    const style = getComputedStyle(document.querySelector('.mt-ball'));
-    return { radius: style.borderRadius, background: style.backgroundColor };
+    const ball = document.querySelector('.mt-ball');
+    const style = getComputedStyle(ball);
+    return { radius: style.borderRadius, background: style.backgroundColor, right: ball.getBoundingClientRect().right, viewportWidth: document.documentElement.clientWidth };
   })()`, false);
-  assert.equal(ballStyle.radius, '50%', `the extension stylesheet is not applied: ${JSON.stringify(ballStyle)}`);
+  assert.equal(ballStyle.radius, '14px 0px 0px 14px', `the extension stylesheet is not applied: ${JSON.stringify(ballStyle)}`);
+  assert.equal(ballStyle.right, ballStyle.viewportWidth, 'the translation tab touches the right edge');
   console.log('PASS content script: injection and extension stylesheet');
 
   await pageClient.evaluate('document.querySelector(".mt-ball").click()', false);
