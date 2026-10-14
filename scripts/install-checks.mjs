@@ -257,14 +257,17 @@ try {
     await session.client.evaluate(`chrome.storage.local.set({provider:'ollama',ollamaOrigin:${JSON.stringify(base)},ollamaModel:'validation-fixture',settingsVersion:1,budgetSettings:{deepseek:{enabled:true,limit:30000},ollama:{enabled:false,limit:30000}}})`);
     await pageClient.send('Emulation.setDeviceMetricsOverride',{width:1280,height:800,deviceScaleFactor:1,mobile:false});
     await pageClient.send('Emulation.setFocusEmulationEnabled',{enabled:true});
-    const output=join(root,'docs','acceptance-v0.5.0'); await mkdir(output,{recursive:true});
+    const output=join(root,'docs',process.env.MT_SITE==='fla'?'acceptance-legacy-html':'acceptance-v0.5.0'); await mkdir(output,{recursive:true});
     let records=[];
     if(process.env.MT_SITE)try{records=JSON.parse(await readFile(join(output,'live-sites.json'),'utf8')).records.filter(record=>!process.env.MT_SITE.split(',').includes(record.name))}catch{/* first run */}
     const runName='live-'+new Date().toISOString().replaceAll(':','-')+'.json';
     const sites=[
       {name:'mdn',url:'https://developer.mozilla.org/en-US/docs/Web/API/HTMLSlotElement/assignedNodes'},
       {name:'bilibili',url:'https://www.bilibili.com/video/BV1GJ411x7h7/'},
-      {name:'youtube',url:'https://www.youtube.com/watch?v=jNQXAC9IVRw'}
+      {name:'youtube',url:'https://www.youtube.com/watch?v=jNQXAC9IVRw'},
+      // The site's fragment links point to index.html, so start at that alias
+      // to test same-document navigation without an intentional page reload.
+      {name:'fla',url:'https://fla26course.github.io/index.html'}
     ].filter(site=>!process.env.MT_SITE||process.env.MT_SITE.split(',').includes(site.name));
     const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
     const inspect=`(() => {
@@ -296,13 +299,30 @@ try {
           record.navigationRetry=true;await wait(1500);
         }
         await wait(2500);
-        if(site.name!=='mdn')for(let index=0;index<20;index++){
+        if(['bilibili','youtube'].includes(site.name))for(let index=0;index<20;index++){
           const available=await pageClient.evaluate(`(() => {const roots=[document];for(let i=0;i<roots.length;i++)for(const node of roots[i].querySelectorAll('*'))if(node.shadowRoot)roots.push(node.shadowRoot);return roots.some(root=>root.querySelector('bili-rich-text,#content-text'));})()`);
           if(available)break;
           await pageClient.evaluate(`document.querySelector('bili-comments,#comments')?.scrollIntoView({block:'start'});window.scrollBy(0,innerHeight*.4)`);
           await wait(750);
         }
-        if(site.name!=='mdn')for(let index=0;index<4;index++){await pageClient.evaluate(`window.scrollBy(0,innerHeight*.85)`);await wait(900)}
+        if(['bilibili','youtube'].includes(site.name))for(let index=0;index<4;index++){await pageClient.evaluate(`window.scrollBy(0,innerHeight*.85)`);await wait(900)}
+        const courseSnapshot=String.raw`(() => {
+          const text=(node,skipParagraphs=false,first=true)=>{
+            if(node.nodeType===3)return node.textContent||'';
+            if(node instanceof Element && (node.matches('.mt-translation,[data-mt-owned],#mt-controls,#mt-layout-panel,script,style') || (!first && skipParagraphs && node.matches('p'))))return '';
+            return [...node.childNodes].map(child=>text(child,skipParagraphs,false)).join('');
+          };
+          const clean=value=>value.replace(/\s+/g,' ').trim();
+          const targets=[...document.querySelectorAll('table td,p,body > a')].map(node=>({text:clean(text(node,node.matches('td'))),table:node.matches('td')||Boolean(node.closest('table'))})).filter(item=>item.text && !/^[\s\d\p{P}\p{S}]+$/u.test(item.text));
+          const clone=document.body.cloneNode(true);clone.querySelectorAll('.mt-translation,[data-mt-owned],#mt-controls,#mt-layout-panel,#mt-selection').forEach(node=>node.remove());
+          return {targets,shape:clone.innerHTML,width:document.documentElement.scrollWidth,links:[...document.querySelectorAll('body > a[href]')].map(node=>({text:clean(text(node)),href:node.getAttribute('href')}))};
+        })()`;
+        if(site.name==='fla'){
+          assert.equal(await pageClient.evaluate(`location.origin`),'https://fla26course.github.io','the real course page must load');
+          record.courseBefore=await pageClient.evaluate(courseSnapshot);
+          assert.ok(record.courseBefore.targets.length>=30,'expected course DOM is present');
+          await pageClient.evaluate(`window.__courseOriginalLinks=[...document.querySelectorAll('body > a[href]')];window.__courseClickCount=0;window.__courseOriginalLinks[0].addEventListener('click',()=>window.__courseClickCount++);`);
+        }
         record.before=await pageClient.evaluate(inspect);
         const navBefore=await pageClient.evaluate(`[...document.querySelectorAll('header,nav')].filter(node=>node.getBoundingClientRect().top<100).slice(0,6).map(node=>({tag:node.tagName,top:node.getBoundingClientRect().top,height:node.getBoundingClientRect().height}))`);
         const start=modelRequests.length;
@@ -314,6 +334,54 @@ try {
         record.navBefore=navBefore;
         record.navAfter=await pageClient.evaluate(`[...document.querySelectorAll('header,nav')].filter(node=>node.getBoundingClientRect().top<100).slice(0,6).map(node=>({tag:node.tagName,top:node.getBoundingClientRect().top,height:node.getBoundingClientRect().height}))`);
         if(record.before.url.startsWith('https://') && record.requests>0){const image=await pageClient.send('Page.captureScreenshot',{format:'png'});await writeFile(join(output,`${site.name}.png`),Buffer.from(image.data,'base64'))}
+        if(site.name==='fla'){
+          const clean=value=>value.replace(/⟦\/?i\d+⟧/g,'').replace(/\s+/g,' ').trim();
+          const translationText=value=>{const prefix='测试译文，仅用于检查提取和显示：';return value.startsWith(prefix)?clean(value.slice(prefix.length)):null;};
+          // Ollama protects dotted names (e.g. B.Sc and D.Ullman) before the
+          // HTTP request. Compare the observed request against that transport
+          // representation; displayed translations must use the original.
+          const requestText=value=>{let index=0;return value.replace(/\b[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+(?:\(\))?/g,()=>`__MT_CODE_${++index}__`);};
+          const blocks=modelRequests.slice(start).flatMap(batch=>batch.groups.flatMap(group=>group.blocks));
+          const expected=new Map();for(const target of record.courseBefore.targets)expected.set(target.text,(expected.get(target.text)||0)+1);
+          record.coverage=[...expected].map(([text,count])=>({text,expected:count,requested:blocks.filter(block=>clean(block.text)===requestText(text)).length}));
+          assert.deepEqual(record.coverage.filter(item=>item.expected!==item.requested),[],'every course target is requested exactly once per source location');
+          const completed=/已翻译 (\d+)\/(\d+)/.exec(record.after.status||'');
+          assert.ok(completed && +completed[1]>0 && completed[1]===completed[2],'every requested block completes rendering');
+          const translations=async()=>{
+            await pageClient.evaluate(`[...document.querySelectorAll('.mt-panel button')].find(button=>button.textContent==='查看受限译文')?.click()`);
+            return pageClient.evaluate(`[...document.querySelectorAll('.mt-translation'),...document.querySelectorAll('#mt-layout-panel [lang=zh-CN]')].map(node=>node.textContent)`);
+          };
+          const shown=await translations();
+          record.accessible=record.coverage.map(item=>({...item,displayed:shown.filter(text=>translationText(text)===item.text).length}));
+          assert.deepEqual(record.accessible.filter(item=>item.displayed!==item.expected),[],'each course translation is accessible inline or in the restricted panel');
+          await pageClient.evaluate(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));window.__courseOriginalLinks[0].scrollIntoView()`);await wait(300);
+          const point=await pageClient.evaluate(`(() => {const link=window.__courseOriginalLinks[0];const walker=document.createTreeWalker(link,NodeFilter.SHOW_TEXT);const range=document.createRange();range.selectNodeContents(walker.nextNode());const r=range.getBoundingClientRect();return {x:r.left+4,y:r.top+r.height/2};})()`);
+          await pageClient.send('Input.dispatchMouseEvent',{type:'mousePressed',...point,button:'left',clickCount:1});
+          await pageClient.send('Input.dispatchMouseEvent',{type:'mouseReleased',...point,button:'left',clickCount:1});await wait(300);
+          record.navigation=await pageClient.evaluate(`({clicks:window.__courseClickCount,hash:decodeURIComponent(location.hash),sameNodes:window.__courseOriginalLinks.every((node,index)=>node===[...document.querySelectorAll('body > a[href]')][index]),targetTop:document.getElementById('Course Information').getBoundingClientRect().top})`);
+          assert.equal(record.navigation.clicks,1);assert.equal(record.navigation.hash,'#Course Information');assert.ok(record.navigation.sameNodes);assert.ok(record.navigation.targetTop<10);
+          const count=modelRequests.length;
+          await pageClient.evaluate(`document.querySelector('.mt-ball').click()`);
+          record.restored=await pageClient.evaluate(courseSnapshot);
+          assert.equal(record.restored.shape,record.courseBefore.shape,'restore preserves original course DOM');
+          assert.equal(await pageClient.evaluate(`document.querySelectorAll('.mt-translation').length`),0);
+          await pageClient.evaluate(`document.querySelector('.mt-ball').click()`);await wait(1500);
+          record.restoreNewRequests=modelRequests.length-count;assert.equal(record.restoreNewRequests,0,'stable real course page reuses cache');
+          await pageClient.evaluate(`document.querySelector('.mt-ball').click()`);
+          await pageClient.send('Emulation.setDeviceMetricsOverride',{width:430,height:800,deviceScaleFactor:1,mobile:false});await wait(400);
+          record.narrowBefore=await pageClient.evaluate(courseSnapshot);
+          await pageClient.evaluate(`document.querySelector('.mt-ball').click()`);await wait(1500);
+          record.narrowAfter=await pageClient.evaluate(courseSnapshot);
+          assert.ok(record.narrowAfter.width<=Math.max(430,record.narrowBefore.width)+2,'no added overflow at 430px');
+          const narrowShown=await translations();
+          assert.ok(record.coverage.every(item=>narrowShown.filter(text=>translationText(text)===item.text).length===item.expected),'narrow-window translations remain accessible');
+          const screenshot=await pageClient.send('Page.captureScreenshot',{format:'png'});await writeFile(join(output,'fla-narrow.png'),Buffer.from(screenshot.data,'base64'));
+          record.remainingTranslations=0;
+          await pageClient.evaluate(`document.querySelector('.mt-ball').click()`);
+          assert.equal(await pageClient.evaluate(`document.querySelectorAll('.mt-translation').length`),0);
+          record.result='passed: source coverage, display access, native anchor click, cache, narrow layout and DOM restore';
+          console.log(`LIVE fla: ${record.result}; targets=${record.courseBefore.targets.length}, requests=${record.requests}, blocks=${record.blocks}`);
+        }else{
         await wait(1200);
         const count=modelRequests.length;
         await pageClient.evaluate(`document.querySelector('.mt-ball')?.click();document.querySelector('.mt-ball')?.click()`);
@@ -364,7 +432,8 @@ try {
         }
         record.result=record.requests>0&&(site.name==='mdn'||record.before.comments>0)?'loaded and translated; inspect detailed results':'blocked: expected page/comment DOM not loaded';
         console.log(`LIVE ${site.name}: ${record.result}; open roots=${record.before.openRoots}, comments=${record.before.comments}, requests=${record.requests}, inline=${record.after.translations}, restore requests=${record.restoreNewRequests}`);
-      } catch(error){record.result='blocked';record.error=String(error);console.log(`LIVE ${site.name}: ${record.error}`)}
+        }
+      } catch(error){record.result='blocked';record.error=String(error);if(site.name==='fla')process.exitCode=1;console.log(`LIVE ${site.name}: ${record.error}`)}
       records.push(record);
       const report=JSON.stringify({at:new Date().toISOString(),browser:session.browserPath,version:session.manifest.version,records},null,2);
       await writeFile(join(output,'live-sites.json'),report);await writeFile(join(output,runName),report);

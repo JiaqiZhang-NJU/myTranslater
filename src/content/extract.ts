@@ -243,6 +243,20 @@ function genericOwner(element: Element): boolean {
   return true;
 }
 
+/**
+ * Legacy pages put links and named section anchors directly in body/font/b.
+ * Only fill gaps: an anchor in ordinary prose still belongs to that prose.
+ * Check ancestors outside the scan root too, so incremental discovery makes
+ * the same ownership decision as a full-page scan.
+ */
+function standaloneAnchor(element: Element, roles: Map<Element, Role>): boolean {
+  if (!element.matches('a[href],a[name],a[id]') || !eligible(element)) return false;
+  for (let ancestor = parentElement(element); ancestor; ancestor = parentElement(ancestor)) {
+    if (roles.has(ancestor) || ownerRole(ancestor) || genericOwner(ancestor)) return false;
+  }
+  return true;
+}
+
 function collectOwned(root: ScanRoot, ownerSet: WeakSet<Element>): Map<Element, Text[]> {
   const result = new Map<Element, Text[]>();
   const stack: Element[] = [];
@@ -275,8 +289,8 @@ function roleOf(element: Element, roles: Map<Element, Role>): Role {
 }
 
 function supportedTable(table: HTMLTableElement): boolean {
+  if (table.matches('[role="grid"]') || closestComposed(parentElement(table) ?? table, 'table,[role="grid"]')) return false;
   if (table.querySelector('table,[role="grid"]')) return false;
-  if (!table.querySelector('th')) return false;
   return [...table.rows].every(row => [...row.cells].every(cell => cell.colSpan === 1 && cell.rowSpan === 1));
 }
 
@@ -326,8 +340,14 @@ export function extractPage(root: ScanRoot = document.body): PageGroup[] {
     if (genericOwner(element)) { roles.set(element, 'paragraph'); owners.add(element); }
   }
 
+  for (const element of candidates) {
+    if (!roles.has(element) && standaloneAnchor(element, roles)) {
+      roles.set(element, 'paragraph'); owners.add(element);
+    }
+  }
+
   const owned = collectOwned(root, owners);
-  const elements = [...roles.keys()].filter(element => (owned.get(element)?.length ?? 0) > 0);
+  const elements = candidates.filter(element => roles.has(element) && (owned.get(element)?.length ?? 0) > 0);
   const selected = new Set(elements);
   const consumed = new Set<Element>();
   const navMembers = new Map<Element, Element[]>();

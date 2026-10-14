@@ -64,6 +64,8 @@ function panelRoot(): HTMLElement {
   return panel;
 }
 function fillPanel(records: Rendered[], source: Element | null): void {
+  if (closeTimer !== undefined) clearTimeout(closeTimer);
+  closeTimer = undefined;
   const root = panelRoot(); root.replaceChildren();
   const close = document.createElement('button'); close.type = 'button'; close.textContent = '关闭';
   close.addEventListener('click', closePanel); root.append(close);
@@ -112,6 +114,7 @@ document.addEventListener('focusin', hovered, true);
 document.addEventListener('pointerout', event => {
   const next = event.relatedTarget;
   if (next instanceof Node && ((panel && panel.contains(next)) || (anchor && containsComposed(anchor, next)))) return;
+  if (anchor && document.activeElement && containsComposed(anchor, document.activeElement)) return;
   if (anchor) closeTimer = window.setTimeout(closePanel, 200);
 }, true);
 document.addEventListener('focusout', event => {
@@ -181,7 +184,7 @@ function insert(record: Rendered): RenderResult {
   if (!record.node.isConnected || !record.carrier.isConnected || !record.textNodes.every(item => item.isConnected) || ownedTextOf(record.textNodes) !== record.original) return 'failed';
   const content = renderInline(record.text, record.inline);
   if (!content) return 'failed';
-  const compact = record.role === 'nav' || record.role === 'button' || record.node.matches('summary') ||
+  const compact = record.role === 'nav' || record.role === 'button' || record.node.matches('summary,a[href]') ||
     Boolean(closestComposed(record.node, 'nav,[role="navigation"],[role="menu"],[role="menubar"],[role="tablist"]'));
   const contained = compact || ['cell', 'table-header', 'list-item'].includes(record.role) || record.node.matches('label,summary,caption,figcaption');
   ensureStyle(record.carrier);
@@ -237,7 +240,16 @@ export function scheduleLayoutCheck(): void {
     }
   });
 }
-window.addEventListener('resize', () => { closePanel(); scheduleLayoutCheck(); });
+window.addEventListener('resize', () => {
+  closePanel();
+  // Table intrinsic widths can grow on resize even when every translation
+  // fitted before. Re-measure from the source layout instead of treating the
+  // width caused by our old spans as pre-existing page overflow.
+  for (const record of rendered.values()) {
+    record.element?.remove(); record.element = null; record.mode = 'floating';
+  }
+  scheduleLayoutCheck();
+});
 document.addEventListener('scroll', event => {
   if (event.target instanceof Node && panel?.contains(event.target)) return;
   closePanel();

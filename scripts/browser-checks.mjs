@@ -622,6 +622,102 @@ try {
     await until(controlsVisible);
     assert.equal(await evaluate(`document.querySelector('.mt-ball').getBoundingClientRect().top`), await evaluate('(innerHeight-48)/2'), 'fullscreen exit restores the remembered height');
   });
+  const legacyTexts = `window.requests.flatMap(batch=>batch.groups.flatMap(group=>group.blocks)).map(block=>window.__clean(block.text))`;
+  const legacyDone = complete;
+  await check('legacy: headerless tables, standalone links and named anchors without duplicate prose', async () => {
+    await open('/legacy-course.html');
+    await evaluate(`window.toggleFromToolbar()`);
+    await until(legacyDone);
+    const blocks = await evaluate(`window.requests.flatMap(batch=>batch.groups.flatMap(group=>group.blocks)).map(block=>({...block,text:window.__clean(block.text)}))`);
+    const required = ['To:', 'Undergraduate and graduate students', 'Classroom and Class Time1:', 'Xianlin Campus. Tuesday, Autumn Semester, 2026',
+      'Classroom and Class Time2:', 'Gulou Campus. Thursday, Autumn Semester, 2026', 'Please attend one campus and check your classroom.',
+      'Textbook:', 'Introduction to Automata Theory, Languages, and Computation.', 'Grading:', 'Final exam (50%) + Project (20%) + Assignments (30%)',
+      'Final Exam Time and Location:', 'TBD', 'Contact:', 'Professor: Course staff', 'Direct cell text. More cell text.', 'Nested cell paragraph.',
+      'Slides', 'Assignments', 'Links', 'Slides (available before class)', 'Wrapped standalone resource', 'Constrained standalone resource',
+      'Outer link text.', 'Inner link paragraph.', 'Finite Automata', 'Read the detailed notes before class.',
+      'A card description with related material and enough explanation to remain ordinary prose.'];
+    for (const text of required) assert.equal(blocks.filter(block=>block.text===text).length, 1, `one block for ${text}`);
+    assert.equal(blocks.filter(block=>block.text==='Course Information').length, 2, 'two distinct source anchors each own a block');
+    assert.equal(blocks.find(block=>block.text==='Slides').role, 'paragraph', 'fallback links are not fabricated navigation');
+    assert.equal(blocks.find(block=>block.text==='To:').role, 'cell');
+    assert.ok(blocks.filter(block=>block.role==='cell').every(block=>!block.context), 'headerless table does not invent headers');
+    for (const text of ['1.24', 'the detailed notes', 'related material', 'Course staff']) assert.equal(blocks.filter(block=>block.text===text).length, 0, 'no split prose or numeric block');
+    assert.ok(!blocks.some(block=>block.text.includes('Excluded')), 'fallback still respects all excluded regions and unsupported tables');
+    const requests = await evaluate('window.requests.length');
+    await wait(1500);
+    assert.equal(await evaluate('window.requests.length'), requests, 'rendering does not cause another request');
+  });
+  await check('legacy: original clicks, anchors, constrained translation access, resize and restore', async () => {
+    await open('/legacy-course.html');
+    await send('Emulation.setFocusEmulationEnabled', {enabled:true});
+    await send('Emulation.setDeviceMetricsOverride', {width:430,height:700,deviceScaleFactor:1,mobile:false});
+    const originalWidth = await evaluate('document.documentElement.scrollWidth');
+    await send('Emulation.clearDeviceMetricsOverride');
+    const shape = `(() => {const clone=document.body.cloneNode(true);clone.querySelectorAll('.mt-translation,[data-mt-owned],#mt-controls,#mt-selection,#mt-layout-panel').forEach(node=>node.remove());return clone.innerHTML;})()`;
+    const before = await evaluate(shape);
+    await evaluate(`window.originalLink=document.querySelector('#course-link');window.toggleFromToolbar()`);
+    await until(legacyDone);
+    await evaluate(`document.querySelector('#course-link').scrollIntoView()`);
+    const point = await evaluate(`(() => {const range=document.createRange();range.selectNodeContents(document.querySelector('#course-link font').firstChild);const r=range.getBoundingClientRect();return {x:r.left+5,y:r.top+r.height/2};})()`);
+    await send('Input.dispatchMouseEvent', {type:'mousePressed',...point,button:'left',clickCount:1});
+    await send('Input.dispatchMouseEvent', {type:'mouseReleased',...point,button:'left',clickCount:1});
+    assert.equal(await evaluate('window.sourceClicks'), 1);
+    assert.equal(await evaluate('location.hash'), '#course');
+    assert.equal(await evaluate(`document.querySelector('#course-link')===window.originalLink`), true);
+    assert.ok(await evaluate(`document.querySelector('#course').getBoundingClientRect().top<10`), 'the original fragment target still works');
+    await evaluate(`document.querySelector('#tight').scrollIntoView({block:'center'})`);
+    await wait(250);
+    await evaluate(`document.querySelector('#tight').focus({preventScroll:true})`);
+    try { await until(`document.querySelector('#mt-layout-panel') && !document.querySelector('#mt-layout-panel').hidden`); }
+    catch (error) {
+      console.log('     legacy layout diagnostic: '+JSON.stringify(await evaluate(`({active:document.activeElement.id,tight:document.querySelector('#tight').outerHTML,status:document.querySelector('.mt-panel [role=status]').textContent,panel:document.querySelector('#mt-layout-panel')?.outerHTML,requests:window.requests.length})`)));
+      throw error;
+    }
+    assert.match(await evaluate(`document.querySelector('#mt-layout-panel').textContent`), /Constrained standalone resource/);
+    await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);
+    const requests = await evaluate('window.requests.length');
+    await send('Emulation.setDeviceMetricsOverride', {width:430,height:700,deviceScaleFactor:1,mobile:false});
+    await wait(1100);
+    assert.equal(await evaluate('window.requests.length'), requests);
+    const translatedWidth = await evaluate('document.documentElement.scrollWidth');
+    if (translatedWidth>Math.max(430, originalWidth)+2) console.log('     overflow diagnostic: '+JSON.stringify(await evaluate(`[...document.body.querySelectorAll('*')].filter(node=>node.getBoundingClientRect().right>innerWidth+2 && node.getClientRects().length).map(node=>({tag:node.tagName,id:node.id,text:node.textContent.slice(0,90),right:node.getBoundingClientRect().right,width:node.getBoundingClientRect().width})).slice(0,20)`)));
+    assert.ok(translatedWidth<=Math.max(430, originalWidth)+2, `no added horizontal overflow in a narrow window (${originalWidth} -> ${translatedWidth})`);
+    await evaluate(`[...document.querySelectorAll('.mt-panel button')].find(button=>button.textContent==='查看受限译文').click()`);
+    const displayed = await evaluate(`[...document.querySelectorAll('.mt-translation'),...document.querySelectorAll('#mt-layout-panel [lang=zh-CN]')].map(node=>window.__clean(node.textContent)).join(' | ')`);
+    for (const text of ['To:', 'Undergraduate and graduate students', 'Course Information', 'Slides (available before class)', 'Grading:', 'Constrained standalone resource']) assert.ok(displayed.includes(text), `accessible translation for ${text}`);
+    await evaluate('window.toggleFromToolbar()');
+    assert.equal(await evaluate(shape), before, 'restoring removes only extension markup');
+    await evaluate('window.toggleFromToolbar()');
+    await until(legacyDone);
+    assert.equal(await evaluate('window.requests.length'), requests, 'unchanged sources reuse successful cache');
+    await send('Emulation.clearDeviceMetricsOverride');
+  });
+  await check('legacy: incremental ownership, new rows, late responses and structural replacements', async () => {
+    await open('/legacy-course.html');
+    await evaluate('window.toggleFromToolbar()');
+    await until(legacyDone);
+    await evaluate(`document.querySelector('#body-link').firstChild.textContent='the revised notes';document.querySelector('#time font').textContent='Updated Tuesday classroom.';const row=document.querySelector('#course-table').insertRow();row.id='new-row';row.innerHTML='<td>Office hours:</td><td>Wednesday afternoon.</td>';`);
+    await until(`(${legacyTexts}).includes('Read the revised notes before class.') && (${legacyTexts}).includes('Wednesday afternoon.')`);
+    await until(legacyDone);
+    assert.equal(await evaluate(`(${legacyTexts}).filter(text=>text==='the revised notes').length`), 0, 'incremental scan keeps the surrounding sentence');
+    await evaluate(`window.delayNext=true;document.querySelector('#wrapped').firstChild.textContent='Slow obsolete resource.'`);
+    await until('Boolean(window.release)');
+    await evaluate(`document.querySelector('#wrapped').firstChild.textContent='Current resource.';window.release()`);
+    await until(`(${legacyTexts}).includes('Current resource.')`);
+    await until(legacyDone);
+    await evaluate(`const node=document.querySelector('#wrapped');node.innerHTML='<p id="replacement">Replacement resource paragraph.</p>';document.querySelector('#new-row').remove()`);
+    await until(`(${legacyTexts}).includes('Replacement resource paragraph.')`);
+    await until(legacyDone);
+    await evaluate(`[...document.querySelectorAll('.mt-panel button')].find(button=>button.textContent==='查看受限译文')?.click()`);
+    const translations = await evaluate(`[...document.querySelectorAll('.mt-translation'),...document.querySelectorAll('#mt-layout-panel [lang=zh-CN]')].map(node=>window.__clean(node.textContent))`);
+    for (const text of ['Slow obsolete resource.', 'Current resource.', 'Office hours:', 'Wednesday afternoon.']) assert.ok(!translations.some(item=>item.includes(text)), `no stale translation for ${text}`);
+    assert.equal(translations.filter(text=>text.includes('Replacement resource paragraph.')).length, 1, 'only the new paragraph owner remains');
+    const requests = await evaluate('window.requests.length');
+    await wait(1600);
+    assert.equal(await evaluate('window.requests.length'), requests, 'new owners settle without repeated requests');
+    await evaluate('window.toggleFromToolbar()');
+    assert.equal(await evaluate('document.querySelectorAll(".mt-translation").length'), 0);
+  });
 } finally {
   socket?.close();
   browser.kill();

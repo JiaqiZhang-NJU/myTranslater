@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Legacy course coverage</title>
+  <link rel="stylesheet" href="/content.css">
+  <style>td { max-width: 450px; } #tight { display: inline-block; width: 65px; height: 19px; overflow: hidden; white-space: nowrap; }</style>
+</head>
+<body>
+  <p id="page-title"><font><b>Formal Languages and Automata</b></font></p>
+  <font>[</font><a id="course-link" href="#course"><font>Course Information</font></a><font>] [</font>
+  <a id="slides-link" href="#slides"><font>Slides</font></a><font>] [</font>
+  <a id="assignment-link" href="#assignments">Assignments</a><font>] [</font>
+  <a id="links-link" href="#links">Links</a><font>]</font>
+  <hr>
+  <a name="course" id="course"><font><b>Course Information</b></font></a>
+  <ul><table id="course-table"><tbody>
+    <tr><td id="audience-label"><font><b>To:</b></font></td><td id="audience"><font>Undergraduate and graduate students</font></td><td></td></tr>
+    <tr><td>Classroom and Class Time1:</td><td id="time"><font color="green">Xianlin Campus. Tuesday, Autumn Semester, 2026</font></td></tr>
+    <tr><td>Classroom and Class Time2:</td><td><font color="blue">Gulou Campus. Thursday, Autumn Semester, 2026</font></td></tr>
+    <tr><td></td><td id="notice"><font color="red">Please attend one campus and check your classroom.</font></td></tr>
+    <tr><td>Textbook:</td><td><font><p id="textbook">Introduction to Automata Theory, Languages, and Computation.</p></font></td></tr>
+    <tr><td>Grading:</td><td id="grading">Final exam (50%) + Project (20%) + Assignments (30%)</td><td>1.24</td></tr>
+    <tr><td>Final Exam Time and Location:</td><td><p>TBD</p></td></tr>
+    <tr><td>Contact:</td><td id="contact">Professor: <a href="#links" id="contact-link">Course staff</a></td></tr>
+    <tr><td></td><td id="mixed">Direct cell text. <p id="cell-child">Nested cell paragraph.</p> More cell text.</td></tr>
+  </tbody></table></ul>
+  <hr>
+  <a name="slides" id="slides"><font><b>Slides (available before class)</b></font></a>
+  <blockquote><p id="lecture"><a href="#slides" id="lecture-link">Finite Automata</a></p></blockquote>
+  <a name="empty"></a><a id="empty"></a>
+  <font><b><a id="wrapped" href="#slides">Wrapped standalone resource</a></b></font>
+  <a id="tight" href="#slides">Constrained standalone resource</a>
+  <a id="block-link" href="#links">Outer link text. <p id="block-child">Inner link paragraph.</p></a>
+  <p id="body-sentence">Read <a id="body-link" href="#slides">the detailed notes</a> before class.</p>
+  <div id="card">A card description with <a id="card-link" href="#links">related material</a> and enough explanation to remain ordinary prose.</div>
+  <table><tr><td colspan="2">Excluded merged cell</td></tr></table>
+  <table><tr><td>Excluded outer cell<table><tr><td>Excluded nested cell</td></tr></table></td></tr></table>
+  <div hidden><a href="#">Excluded hidden link</a><table><tr><td>Excluded hidden cell</td></tr></table></div>
+  <div translate="no"><a href="#">Excluded protected link</a><table><tr><td>Excluded protected cell</td></tr></table></div>
+  <pre><a href="#">Excluded code link</a></pre>
+  <div contenteditable="true"><a href="#">Excluded editable link</a><span contenteditable="false"><a href="#">Excluded editable island</a></span></div>
+  <p><a name="assignments" id="assignments">Assignments section</a></p>
+  <p><a name="links" id="links">Links section</a></p>
+  <script>
+    window.requests = [];
+    window.sourceClicks = 0;
+    document.querySelector('#course-link').addEventListener('click', () => window.sourceClicks++);
+    window.chrome = { runtime: {
+      id: 'smoke-extension',
+      onMessage: { addListener: listener => {
+        window.toggleFromToolbar = () => listener({ type: 'TOGGLE_TRANSLATION' }, { id: 'smoke-extension' }, () => {});
+      } },
+      sendMessage: async message => {
+        if (message.type === 'GET_PROVIDER_STATUS') return { ok: true, ready: true, provider: 'ollama', identity: 'ollama:legacy:v1', settingsVersion: 1 };
+        if (message.type === 'TRANSLATE') {
+          window.requests.push(message.batch);
+          if (window.delayNext) {
+            window.delayNext = false;
+            await new Promise(resolve => { window.release = resolve; });
+          }
+          return { ok: true, usage: { totalTokens: 10 }, translations: message.batch.groups.flatMap(group => group.blocks.map(block => ({ id: block.id, text: '测试译文：' + block.text }))) };
+        }
+        return { ok: true };
+      }
+    } };
+  </script>
+  <script src="/content.js"></script>
+</body>
+</html>
