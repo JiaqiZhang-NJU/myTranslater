@@ -1,5 +1,5 @@
 import { isTranslationBatch, type TranslationBatch, type TranslationResult, type Usage } from './shared';
-import { TranslationError, TRANSLATION_PROMPT, validateTranslations } from './translation';
+import { TranslationError, translationPrompt, validateTranslations } from './translation';
 import { withoutInlineMarkers } from './inline';
 
 export const DEFAULT_OLLAMA_ORIGIN = 'http://127.0.0.1:11434';
@@ -73,17 +73,22 @@ export function parseOllamaResponse(data: unknown, batch: TranslationBatch): Tra
 }
 
 function outputSchema(batch: TranslationBatch) {
-  const ids = batch.groups.flatMap(group => group.blocks.map(block => block.id));
+  const blocks = batch.groups.flatMap(group => group.blocks);
+  const ids = blocks.map(block => block.id);
   return {
     type: 'object',
     properties: {
       translations: {
         type: 'array', minItems: ids.length, maxItems: ids.length,
-        items: {
+        items: { anyOf: [{
           type: 'object',
-          properties: { id: { type: 'string', enum: ids }, text: { type: 'string', minLength: 1, maxLength: 5000 } },
-          required: ['id', 'text'], additionalProperties: false
-        }
+          properties: { id: { type: 'string', enum: ids }, text: { type: 'string', minLength: 1, maxLength: 5000 }, status: { type: 'string', enum: ['translated'] } },
+          required: ['id', 'text', 'status'], additionalProperties: false
+        }, ...blocks.filter(block => !block.requireTranslation).map(block => ({
+          type: 'object',
+          properties: { id: { type: 'string', enum: [block.id] }, text: { type: 'string', enum: [block.text] }, status: { type: 'string', enum: ['unchanged'] } },
+          required: ['id', 'text', 'status'], additionalProperties: false
+        }))] }
       }
     },
     required: ['translations'], additionalProperties: false
@@ -168,7 +173,7 @@ export async function translateOllama(originInput: string, modelInput: string, b
         body: JSON.stringify({
           model,
           messages: [
-            { role: 'system', content: TRANSLATION_PROMPT },
+            { role: 'system', content: translationPrompt(requestBatch) },
             { role: 'user', content: JSON.stringify(requestBatch) }
           ],
           stream: false,

@@ -6,7 +6,7 @@ import { closestComposed, containsComposed, hiddenComposed, parentElement, compo
 export type RenderResult = 'inline' | 'floating' | 'failed';
 interface Rendered {
   node: Element; carrier: Element; textNodes: Text[]; original: string; text: string;
-  role: Role; inline: Map<string, Element>; element: HTMLElement | null; mode: RenderResult;
+  role: Role; inline: Map<string, Element>; language: string; element: HTMLElement | null; mode: RenderResult;
   watching?: Element[];
 }
 const rendered = new Map<Element, Rendered>();
@@ -73,7 +73,7 @@ function fillPanel(records: Rendered[], source: Element | null): void {
   for (const record of records) {
     const item = document.createElement('div');
     const original = document.createElement('p'); original.className = 'mt-layout-source'; original.textContent = record.original;
-    const translation = document.createElement('p'); translation.lang = 'zh-CN'; translation.textContent = withoutInlineMarkers(record.text);
+    const translation = document.createElement('p'); translation.lang = record.language; translation.textContent = withoutInlineMarkers(record.text);
     item.append(original, translation); root.append(item);
   }
   anchor = source; root.hidden = false;
@@ -189,7 +189,7 @@ function insert(record: Rendered): RenderResult {
   const contained = compact || ['cell', 'table-header', 'list-item'].includes(record.role) || record.node.matches('label,summary,caption,figcaption');
   ensureStyle(record.carrier);
   const translated = document.createElement(contained ? 'span' : 'div');
-  translated.className = 'mt-translation'; translated.lang = 'zh-CN';
+  translated.className = 'mt-translation'; translated.lang = record.language;
   if (contained) translated.setAttribute('data-mt-contained', '');
   if (compact) { translated.setAttribute('data-mt-compact', ''); translated.setAttribute('aria-hidden', 'true'); }
   translated.style.setProperty('visibility', 'hidden', 'important'); translated.append(content);
@@ -216,9 +216,9 @@ function insert(record: Rendered): RenderResult {
   return 'inline';
 }
 
-export function renderTranslation(node: Element, carrier: Element, textNodes: Text[], original: string, text: string, role: Role, inline: Map<string, Element>): RenderResult {
+export function renderTranslation(node: Element, carrier: Element, textNodes: Text[], original: string, text: string, role: Role, inline: Map<string, Element>, language = 'zh-CN'): RenderResult {
   clearTranslation(node);
-  const record: Rendered = { node, carrier, textNodes, original, text, role, inline, element: null, mode: 'failed' };
+  const record: Rendered = { node, carrier, textNodes, original, text, role, inline, language, element: null, mode: 'failed' };
   record.mode = insert(record);
   if (record.mode !== 'failed') { rendered.set(node, record); watch(record, true); }
   return record.mode;

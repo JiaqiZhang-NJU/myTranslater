@@ -1,4 +1,4 @@
-import type { TextBlock, TextGroup, TranslationBatch, TranslationResult } from '../shared';
+import type { TextBlock, TextGroup, TranslationBatch, TranslationResult, TranslationItem } from '../shared';
 import { pageUrlIdentity } from '../shared';
 import { makeBatches, cacheKey } from './context';
 import { extractPage, navigationFor, ownedTextOf, prioritize, type PageGroup } from './extract';
@@ -9,11 +9,15 @@ import type { BudgetSnapshot } from '../budget';
 import { closestComposed, containsComposed, parentElement, OWNED_SELECTOR, type ScanRoot } from '../dom';
 import { RootObserver } from './roots';
 import { PageCache } from './cache';
+import { LEGACY_LANGUAGE, languageFields, languageIdentity, languageSummary, parseLanguageSettings, type LanguageSettings } from '../languages';
+import { createLanguagePanel } from './language-panel';
+type CachedText = Omit<TranslationItem, 'id'>;
 
 interface RuntimeResponse extends Partial<TranslationResult> {
   ok: boolean; error?: string; kind?: string; ready?: boolean; message?: string; identity?: string; settingsVersion?: number;
   provider?: 'deepseek' | 'ollama';
   budget?: BudgetSnapshot;
+  language?: LanguageSettings;
 }
 
 if (window.top === window && document.body) {
@@ -29,6 +33,8 @@ if (window.top === window && document.body) {
   let providerIdentity = '';
   let providerName = 'DeepSeek';
   let settingsVersion = 0;
+  let language: LanguageSettings = { ...LEGACY_LANGUAGE };
+  let applyingLanguage = false;
   let tokenTotal = 0;
   let observer: RootObserver | null = null;
   let scanTimer: number | undefined;
@@ -36,15 +42,15 @@ if (window.top === window && document.body) {
   const dirtyScopes = new Set<ScanRoot>();
   const groups = new Map<string, PageGroup>();
   const pending = new Set<string>();
-  const translated = new Set<string>();
-  const cache = new PageCache<string[]>(1000, 2_500_000);
-  const blockCache = new PageCache<string>(4000, 2_000_000);
+  const completed = new Map<string, CachedText>();
+  const cache = new PageCache<CachedText[]>(1000, 2_500_000);
+  const blockCache = new PageCache<CachedText>(4000, 2_000_000);
   /** Bounded cache for repeated identical selections on this document. */
-  const selectionCache = new PageCache<string>(50, 200_000);
+  const selectionCache = new PageCache<CachedText>(50, 200_000);
   let budgetInfo: BudgetSnapshot | undefined;
   const cancelledSelections = new Set<string>();
   const controls = createControls(toggle, retry, () => { void chrome.runtime.sendMessage({ type: 'OPEN_OPTIONS' }); }, pauseOrResume, hideForPage,
-    () => { stop(); forgetAll(); selectionCache.clear(); selection.close(); void start(); });
+    () => { stop(); forgetAll(); selectionCache.clear(); selection.close(); void start(); }, () => { void languagePanel.open(); });
 
   function label(provider?: 'deepseek' | 'ollama'): string {
     if (provider) providerName = provider === 'ollama' ? 'Ollama 本机模型' : 'DeepSeek API';
@@ -53,10 +59,14 @@ if (window.top === window && document.body) {
 
   function status(message = ''): void {
     const total = [...groups.values()].reduce((sum, group) => sum + group.group.blocks.length, 0);
-    const done = [...translated].reduce((sum, id) => sum + (groups.get(id)?.group.blocks.length ?? 0), 0);
+    const skipped = [...completed.values()].filter(item => item.status === 'unchanged');
+    const done = completed.size - skipped.length;
+    const uncertain = skipped.filter(item => item.reason === 'uncertain').length;
+    const unsupported = skipped.filter(item => item.reason === 'unsupported').length;
+    const skips = skipped.length ? ` · 跳过 ${skipped.length}${uncertain ? `（语言不确定 ${uncertain}）` : ''}${unsupported ? `（暂不支持 ${unsupported}）` : ''}` : '';
     const usage = budgetInfo ? `${budgetInfo.used}${budgetInfo.enabled ? `/${budgetInfo.limit} token` : ' token · 未限制'}${budgetInfo.inFlight ? ` · 预留 ${budgetInfo.inFlight}` : ''}` : `${tokenTotal} token`;
     const floating = restrictedCount();
-    controls.setStatus(message ? `${message}${budgetInfo ? ` · ${usage}` : ''}` : (paused ? `已暂停 · ${done}/${total} · ${usage}` : active ? `已翻译 ${done}/${total} · ${usage}${floating ? ` · ${floating} 处浮层` : ''}` : '点击悬浮球翻译当前页'));
+    controls.setStatus(`${languageSummary(language)} · ` + (message ? `${message}${budgetInfo ? ` · ${usage}` : ''}` : (paused ? `已暂停 · ${done}/${total}${skips} · ${usage}` : active ? `已翻译 ${done}/${total}${skips} · ${usage}${floating ? ` · ${floating} 处浮层` : ''}` : '点击悬浮球翻译当前页')));
   }
 
   function same(a: PageGroup, b: PageGroup): boolean {
@@ -69,8 +79,8 @@ if (window.top === window && document.body) {
   }
 
   function removeTranslation(group: PageGroup): void {
+    for (const block of group.group.blocks) completed.delete(block.id);
     for (const node of group.nodes.values()) clearTranslation(node);
-    translated.delete(group.group.id);
   }
 
   function scan(root: ScanRoot): void {
@@ -168,13 +178,13 @@ if (window.top === window && document.body) {
     status();
   }
 
-  function saved(group: PageGroup): Map<string, string> | undefined {
+  function saved(group: PageGroup): Map<string, CachedText> | undefined {
     const key = groupCacheKey(group);
     const value = cache.get(key);
     return value ? new Map(group.group.blocks.map((block, i) => [block.id, value[i]])) : undefined;
   }
 
-  function remember(group: PageGroup, texts: Map<string, string>): void {
+  function remember(group: PageGroup, texts: Map<string, CachedText>): void {
     cache.set(groupCacheKey(group), group.group.blocks.map(block => texts.get(block.id)!));
     // Single-block entries retain the complete context supplied for the group.
     for (const block of group.group.blocks) {
@@ -186,7 +196,11 @@ if (window.top === window && document.body) {
 
   function groupCacheKey(group: PageGroup): string {
     const signatures = group.group.blocks.map(block => [...(group.inline.get(block.id) ?? [])].map(([key, element]) => [key, element.tagName, element.getAttribute('href') ?? '']));
-    return JSON.stringify([cacheKey(document.title, group.group, providerIdentity), signatures]);
+    return JSON.stringify([cacheKey(document.title, group.group, providerIdentity, language, pageLanguage()), signatures]);
+  }
+  function pageLanguage(): string | undefined {
+    const value = document.documentElement.lang;
+    return /^[a-zA-Z-]{1,25}$/.test(value) ? value : undefined;
   }
   function blockCacheKey(block: TextBlock, group: PageGroup): string {
     return `${groupCacheKey(group)}:${group.group.blocks.indexOf(block)}`;
@@ -197,17 +211,19 @@ if (window.top === window && document.body) {
     blockCache.clear();
   }
 
-  function apply(group: PageGroup, texts: Map<string, string>): boolean {
-    if (!valid(group) || group.group.blocks.some(block => !texts.get(block.id))) return false;
+  function apply(group: PageGroup, texts: Map<string, CachedText>): boolean {
+    if (!valid(group) || group.group.blocks.some(block => !texts.get(block.id)?.text)) return false;
     for (const block of group.group.blocks) {
+      const value = texts.get(block.id)!;
+      completed.set(block.id, value);
+      if (value.status === 'unchanged' || value.text === block.text) continue;
       const node = group.nodes.get(block.id)!;
       const carrier = group.carriers.get(block.id) ?? node;
-      if (renderTranslation(node, carrier, group.textNodes.get(block.id) ?? [], group.sources.get(block.id) ?? '', texts.get(block.id)!, block.role, group.inline.get(block.id) ?? new Map()) === 'failed') {
+      if (renderTranslation(node, carrier, group.textNodes.get(block.id) ?? [], group.sources.get(block.id) ?? '', value.text, block.role, group.inline.get(block.id) ?? new Map(), language.target) === 'failed') {
         removeTranslation(group);
         return false;
       }
     }
-    translated.add(group.group.id);
     return true;
   }
 
@@ -240,17 +256,18 @@ if (window.top === window && document.body) {
         }
         const remaining = prioritize([...pending].map(id => groups.get(id)).filter((item): item is PageGroup => Boolean(item)));
         if (!remaining.length) { status(); break; }
-        const reuse = new Map<string, Map<string, string>>();
+        const reuse = new Map<string, Map<string, CachedText>>();
         const partial: TextGroup[] = [];
         for (const item of remaining) {
-          const cached = new Map<string, string>();
+          const cached = new Map<string, CachedText>();
           for (const block of item.group.blocks) {
             const value = blockCache.get(blockCacheKey(block, item));
             if (value) cached.set(block.id, value);
           }
           reuse.set(item.group.id, cached);
           const missing = item.group.blocks.filter(block => !cached.has(block.id));
-          if (missing.length) { partial.push({ ...item.group, blocks: missing }); continue; }
+          if (missing.length) { partial.push({ ...item.group, blocks: missing,
+            ...(missing.length < item.group.blocks.length ? { reference: item.group.blocks.filter(block => cached.has(block.id)).map(block => block.text).join('\n').slice(0, 400) } : {}) }); continue; }
           pending.delete(item.group.id);
           const texts = new Map(item.group.blocks.map(block => [block.id, cached.get(block.id)!]));
           if (apply(item, texts)) remember(item, texts);
@@ -261,7 +278,7 @@ if (window.top === window && document.body) {
           }
         }
         if (!partial.length) { status(); continue; }
-        const batch = makeBatches(document.title.slice(0, 180), partial)[0];
+        const batch = makeBatches(document.title.slice(0, 180), partial, language, pageLanguage())[0];
         if (!batch) break;
         const sent = new Map(batch.groups.map(item => [item.id, groups.get(item.id)!]));
         batch.groups.forEach(item => pending.delete(item.id));
@@ -299,11 +316,11 @@ if (window.top === window && document.body) {
         }
         tokenTotal += result.usage?.totalTokens ?? 0;
         if (result.budget) budgetInfo = result.budget;
-        const translations = new Map(result.translations.map(item => [item.id, item.text]));
+        const translations = new Map(result.translations.map(item => [item.id, item]));
         for (const [id, original] of sent) {
           const current = groups.get(id);
           if (!current || !same(current, original)) continue;
-          const texts = new Map(current.group.blocks.map(block => [block.id, translations.get(block.id) ?? reuse.get(id)?.get(block.id) ?? '']));
+          const texts = new Map(current.group.blocks.map(block => [block.id, translations.get(block.id) ?? reuse.get(id)?.get(block.id) ?? { text: '' }]));
           if (apply(current, texts)) remember(current, texts);
         }
         status();
@@ -334,19 +351,25 @@ if (window.top === window && document.body) {
     if (!check.ok || !check.ready || !check.identity || !Number.isSafeInteger(check.settingsVersion)) {
       return { ok: false, error: check.message || check.error || '请先配置翻译方式', kind: check.kind ?? 'config' };
     }
-    const block: TextBlock = { id: 'sel', role: 'paragraph', text: request.text, ...(request.context ? { context: request.context } : {}) };
+    const rule = parseLanguageSettings(check.language);
+    const version = check.settingsVersion;
+    if (revision !== pageRevision || version! < settingsVersion) return { ok: false, kind: 'cancelled', error: '已取消' };
+    language = rule; settingsVersion = version!;
+    const block: TextBlock = { id: 'sel', role: 'paragraph', text: request.text, ...(request.context ? { context: request.context } : {}), ...(request.lang ? { lang: request.lang } : {}) };
     // The key contains the source text, the context actually used, the target
     // language and the provider identity, so a repeated
     // word alone never hits a stale entry.
-    const selectionKey = cacheKey(request.pageTitle, { id: 'gsel', blocks: [block] }, check.identity);
+    const selectionPageLang = pageLanguage();
+    const selectionKey = cacheKey(request.pageTitle, { id: 'gsel', blocks: [block] }, check.identity, rule, selectionPageLang);
     const cached = selectionCache.get(selectionKey);
     if (revision !== pageRevision || request.pageTitle !== document.title.slice(0, 180) || cancelledSelections.delete(request.sessionId)) return { ok: false, kind: 'cancelled', error: '已取消' };
     if (cached) {
-      return { ok: true, translations: [{ id: 'sel', text: cached }], usage: null };
+      return selectionOutcome({ id: 'sel', ...cached }, null);
     }
     const batch: TranslationBatch = {
       pageTitle: request.pageTitle,
-      targetLang: 'zh-CN',
+      ...languageFields(rule),
+      ...(selectionPageLang ? { pageLang: selectionPageLang } : {}),
       mode: 'selection',
       groups: [{ id: 'gsel', blocks: [block] }]
     };
@@ -355,19 +378,21 @@ if (window.top === window && document.body) {
         type: 'TRANSLATE', sessionId: request.sessionId, settingsVersion: check.settingsVersion, batch
       }) as RuntimeResponse;
       syncPage();
-      if (cancelledSelections.delete(request.sessionId) || revision !== pageRevision || request.pageTitle !== document.title.slice(0, 180)) return { ok: false, kind: 'cancelled', error: '已取消' };
+      if (cancelledSelections.delete(request.sessionId) || revision !== pageRevision || version !== settingsVersion || languageIdentity(language) !== languageIdentity(rule) || selectionPageLang !== pageLanguage() || request.pageTitle !== document.title.slice(0, 180)) return { ok: false, kind: 'cancelled', error: '已取消' };
       if (result?.budget) { budgetInfo = result.budget; status(); }
       if (result?.ok && result.translations) {
-        const text = result.translations[0]?.text;
-        if (text) {
-          selectionCache.set(selectionKey, text);
-        }
-        return { ok: true, translations: result.translations, usage: result.usage ?? null };
+        const item = result.translations[0];
+        if (item?.text) selectionCache.set(selectionKey, item);
+        return item ? selectionOutcome(item, result.usage ?? null) : { ok: false, error: '未收到译文', kind: 'response' };
       }
       return { ok: false, error: result?.error || '翻译失败，请稍后重试', kind: result?.kind ?? 'unknown' };
     } catch {
       return { ok: false, error: '连接中断；该请求可能已计费，请谨慎重试', kind: 'unknown' };
     }
+  }
+  function selectionOutcome(item: TranslationItem, usage: TranslationResult['usage']): SelectionOutcome {
+    if (item.status === 'unchanged') return { ok: false, kind: 'skipped', usage, error: item.reason === 'other' ? '所选文字不属于指定语言，已保留原文。' : item.reason === 'uncertain' ? '无法可靠判断所选文字的语言，已保留原文。' : item.reason === 'unsupported' ? '所选文字的语言暂不在首批支持范围内。' : '所选文字无需翻译，已保留原文。' };
+    return { ok: true, translations: [item], usage };
   }
 
   const selection = createSelectionPanel({
@@ -388,7 +413,27 @@ if (window.top === window && document.body) {
     openOptions: () => { void chrome.runtime.sendMessage({ type: 'OPEN_OPTIONS' }); },
     notify: (message, duration) => controls.notify(message, duration),
     waitForIdle: whenIdle,
-    providerLabel: () => label()
+    providerLabel: () => `${label()} · ${languageSummary(language)}`
+  });
+  const languagePanel = createLanguagePanel(async () => {
+    const check = await providerStatus();
+    if (!check?.ok || !Number.isSafeInteger(check.settingsVersion)) throw new Error('无法读取语言设置，请重试');
+    return { language: parseLanguageSettings(check.language), version: check.settingsVersion! };
+  }, async (rule, version) => {
+    if (languageIdentity(rule) === languageIdentity(language) && version === settingsVersion) return;
+    const restart = active;
+    applyingLanguage = true;
+    pageRevision++;
+    stop(); selection.close();
+    try {
+      const reply = await chrome.runtime.sendMessage({ type: 'SET_LANGUAGE', language: rule, expectedVersion: version });
+      if (!reply?.ok) throw new Error(reply?.error || '应用失败，请重试');
+      const check = await providerStatus();
+      if (!check?.ok) throw new Error('已保存，但无法读取最新设置，请重新开启翻译');
+      language = parseLanguageSettings(check.language); settingsVersion = check.settingsVersion!;
+      status();
+      if (restart && !hiddenForPage) void start();
+    } finally { applyingLanguage = false; }
   });
 
   async function start(): Promise<void> {
@@ -398,7 +443,7 @@ if (window.top === window && document.body) {
     startingForPage = requestedPage;
     try {
       const check = await providerStatus();
-      if (hiddenForPage || requestedPage !== pageRevision) return;
+      if (hiddenForPage || requestedPage !== pageRevision || active) return;
       if (!check) { status('扩展后台暂时不可用'); return; }
       if (!check?.ok || !check.ready || !check.identity || !Number.isSafeInteger(check.settingsVersion)) {
         status(check?.message || check?.error || '请先配置翻译方式');
@@ -406,7 +451,9 @@ if (window.top === window && document.body) {
         return;
       }
       providerIdentity = check.identity;
+      if (check.settingsVersion! < settingsVersion) { status('设置已更新，请重新开启翻译'); return; }
       settingsVersion = check.settingsVersion!;
+      language = parseLanguageSettings(check.language);
     } finally { if (startingForPage === requestedPage) startingForPage = null; }
     active = true;
     paused = false;
@@ -418,7 +465,7 @@ if (window.top === window && document.body) {
     controls.setRetry(false);
     observer = new RootObserver(changed, root => { dirtyScopes.add(root); scheduleScan(); }, root => { dirtyScopes.add(root); scheduleScan(); },
       { childList: true, characterData: true, subtree: true, attributes: true,
-        attributeFilter: ['hidden', 'class', 'style', 'aria-hidden', 'role', 'scope', 'headers', 'open', 'slot', 'name', 'translate', 'contenteditable', 'href'] });
+        attributeFilter: ['hidden', 'class', 'style', 'aria-hidden', 'role', 'scope', 'headers', 'open', 'slot', 'name', 'translate', 'contenteditable', 'href', 'lang'] });
     dirtyScopes.clear();
     scan(document.body);
     if (!groups.size) status('当前页面没有可翻译内容；会继续等待新增内容');
@@ -438,7 +485,7 @@ if (window.top === window && document.body) {
     clearTranslations();
     groups.clear();
     pending.clear();
-    translated.clear();
+    completed.clear();
     blocked = false;
     quotaBlocked = false;
     paused = false;
@@ -454,6 +501,7 @@ if (window.top === window && document.body) {
     pageRevision += 1;
     stop();
     selection.close();
+    languagePanel.close();
     controls.setHidden(true);
   }
 
@@ -517,7 +565,15 @@ if (window.top === window && document.body) {
 
   chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
     if (sender.id !== chrome.runtime.id || !message || typeof message !== 'object') return;
-    const data = message as { type?: unknown; text?: unknown; editable?: unknown; frameOk?: unknown };
+    const data = message as { type?: unknown; text?: unknown; editable?: unknown; frameOk?: unknown; settingsVersion?: number; language?: LanguageSettings };
+    if (data.type === 'MT_SETTINGS_CHANGED' && Number.isSafeInteger(data.settingsVersion) && data.settingsVersion! > settingsVersion) {
+      if (!applyingLanguage) {
+        pageRevision++; stop(); selection.close();
+        settingsVersion = data.settingsVersion!; language = parseLanguageSettings(data.language);
+        status('翻译设置已更新；点击悬浮球继续');
+      }
+      sendResponse({ ok: true }); return;
+    }
     if (data.type === 'TOGGLE_TRANSLATION') {
       toggle();
       sendResponse({ ok: true });
@@ -557,4 +613,7 @@ if (window.top === window && document.body) {
     if (active) { dirtyScopes.add(document.body); scheduleScan(); }
   });
   titleObserver.observe(document.head, { subtree: true, childList: true, characterData: true });
+  new MutationObserver(() => {
+    if (active) { dirtyScopes.add(document.body); scheduleScan(); }
+  }).observe(document.documentElement, { attributes: true, attributeFilter: ['lang'] });
 }

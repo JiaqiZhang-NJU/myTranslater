@@ -15,6 +15,7 @@ export interface SelectionRequest {
   sessionId: string;
   context: string;
   pageTitle: string;
+  lang?: string;
 }
 
 export interface SelectionPanelOptions {
@@ -233,6 +234,11 @@ export function createSelectionPanel(options: SelectionPanelOptions): SelectionP
       return;
     }
     result.textContent = outcome.error || '翻译失败，请稍后重试';
+    if (outcome.kind === 'skipped') {
+      meta.textContent = `${options.providerLabel()} · 保留原文`;
+      usage.textContent = outcome.usage ? `本次用量约 ${outcome.usage.totalTokens} token` : '';
+      state('blocked'); return;
+    }
     if (outcome.kind === 'budget') {
       meta.textContent = '本页翻译预算已用完';
       state('notice');
@@ -303,7 +309,11 @@ export function createSelectionPanel(options: SelectionPanelOptions): SelectionP
       showPanel();
       return;
     }
-    void run({ text, sessionId, context, pageTitle }, text);
+    let lang: string | undefined;
+    for (let cursor = anchorElement; cursor && cursor !== document.documentElement; cursor = parentElement(cursor)) {
+      if (cursor.hasAttribute('lang')) { const value = cursor.getAttribute('lang') ?? ''; if (/^[a-zA-Z-]{1,25}$/.test(value)) lang = value; break; }
+    }
+    void run({ text, sessionId, context, pageTitle, ...(lang ? { lang } : {}) }, text);
   }
 
   return { open, close: dismiss, isOpen };

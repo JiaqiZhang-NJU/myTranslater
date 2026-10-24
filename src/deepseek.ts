@@ -1,5 +1,5 @@
 import { isTranslationBatch, type TranslationBatch, type TranslationResult, type Usage } from './shared';
-import { TranslationError, TRANSLATION_PROMPT, validateTranslations } from './translation';
+import { TranslationError, translationPrompt, validateTranslations } from './translation';
 
 export { TranslationError } from './translation';
 
@@ -42,7 +42,7 @@ export async function translateDeepSeek(apiKey: string, batch: TranslationBatch,
         stream: false,
         max_tokens: 2048,
         messages: [
-          { role: 'system', content: TRANSLATION_PROMPT },
+          { role: 'system', content: translationPrompt(batch) },
           { role: 'user', content: JSON.stringify(batch) }
         ]
       }),

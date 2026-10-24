@@ -35,3 +35,8 @@ button:disabled { opacity: .55; cursor: wait; }
 section { border-top: 1px solid #e2e7f0; }
 footer { margin-top: 24px; padding-top: 14px; border-top: 1px solid #e2e7f0; color: #536079; font-size: 14px; }
 footer a { color: #2348bb; }
+.language-settings { border: 1px solid #d5deed; border-radius: 9px; padding: 12px 16px; margin: 20px 0; }
+.language-settings legend { font-weight: 600; }
+.language-settings select { width: 100%; font: inherit; padding: 9px; border: 1px solid #aeb9cc; border-radius: 7px; background: #fff; color: #202738; margin-bottom: 12px; }
+.language-settings [hidden] { display: none; }
+.mt-language-summary { color: #3156d5; margin: 4px 0; }

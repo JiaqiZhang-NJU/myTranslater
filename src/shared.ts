@@ -1,3 +1,5 @@
+import { batchLanguage, isTargetLanguage, validLanguageSettings, type LanguageSettings, type SourceLanguage, type TargetLanguage } from './languages';
+import type { SettingsInput } from './options-service';
 export type Role = 'heading' | 'paragraph' | 'list-item' | 'nav' | 'button' | 'table-header' | 'cell';
 
 /** Page scanning accepts text blocks from 2 to 2200 characters. */
@@ -12,17 +14,23 @@ export interface TextBlock {
   role: Role;
   text: string;
   context?: string;
+  lang?: string;
+  requireTranslation?: boolean;
 }
 
 export interface TextGroup {
   id: string;
   section?: string;
+  reference?: string;
   blocks: TextBlock[];
 }
 
 export interface TranslationBatch {
   pageTitle: string;
-  targetLang: 'zh-CN';
+  targetLang: TargetLanguage;
+  translationScope?: 'all' | 'specific';
+  sourceLang?: SourceLanguage;
+  pageLang?: string;
   groups: TextGroup[];
   /**
    * 'selection' marks a user-initiated translation of the text they selected.
@@ -38,8 +46,10 @@ export interface Usage {
   totalTokens: number;
 }
 
+export type SkipReason = 'target' | 'other' | 'uncertain' | 'unsupported' | 'nonlinguistic';
+export interface TranslationItem { id: string; text: string; status?: 'unchanged'; reason?: SkipReason }
 export interface TranslationResult {
-  translations: { id: string; text: string }[];
+  translations: TranslationItem[];
   usage: Usage | null;
 }
 
@@ -51,11 +61,18 @@ export type ContentMessage =
   | { type: 'GET_DOCK_POSITION' }
   | { type: 'SET_DOCK_POSITION'; ratio: number }
   | { type: 'OPEN_OPTIONS' };
+export type SettingsMessage = { type: 'SAVE_SETTINGS'; input: SettingsInput }
+  | { type: 'SET_LANGUAGE'; language: LanguageSettings; expectedVersion: number };
 
 export function isTranslationBatch(value: unknown): value is TranslationBatch {
   if (!value || typeof value !== 'object') return false;
   const batch = value as Partial<TranslationBatch>;
-  if (typeof batch.pageTitle !== 'string' || batch.pageTitle.length > 180 || batch.targetLang !== 'zh-CN' || !Array.isArray(batch.groups)) return false;
+  if (typeof batch.pageTitle !== 'string' || batch.pageTitle.length > 180 || !isTargetLanguage(batch.targetLang) || !Array.isArray(batch.groups)) return false;
+  if (batch.translationScope !== undefined && !['all', 'specific'].includes(batch.translationScope)) return false;
+  if (batch.translationScope === 'specific' && batch.sourceLang === undefined) return false;
+  if (batch.translationScope === 'all' && batch.sourceLang !== undefined) return false;
+  if (batch.pageLang !== undefined && (typeof batch.pageLang !== 'string' || !/^[a-zA-Z-]{1,25}$/.test(batch.pageLang))) return false;
+  if (!validLanguageSettings(batchLanguage(batch as TranslationBatch))) return false;
   if (batch.mode !== undefined && batch.mode !== 'selection') return false;
   const selection = batch.mode === 'selection';
   if (batch.groups.length < 1 || batch.groups.length > (selection ? 1 : 8)) return false;
@@ -65,6 +82,8 @@ export function isTranslationBatch(value: unknown): value is TranslationBatch {
     if (!group || typeof group.id !== 'string' || !/^[\w-]{1,40}$/.test(group.id) || !Array.isArray(group.blocks)) return false;
     if (group.blocks.length < 1 || group.blocks.length > (selection ? 2 : 8)) return false;
     if (group.section !== undefined && (typeof group.section !== 'string' || group.section.length > 180)) return false;
+    if (group.reference !== undefined && (typeof group.reference !== 'string' || group.reference.length > 600)) return false;
+    totalChars += group.reference?.length ?? 0;
     totalChars += group.section?.length ?? 0;
     for (const block of group.blocks) {
       if (!block || typeof block.id !== 'string' || !/^[\w-]{1,40}$/.test(block.id) || ids.has(block.id)) return false;
@@ -73,6 +92,8 @@ export function isTranslationBatch(value: unknown): value is TranslationBatch {
       if (block.text.trim().length < (selection ? SELECTION_MIN_CHARS : BLOCK_MIN_CHARS)) return false;
       if (block.text.length > (selection ? SELECTION_MAX_CHARS : BLOCK_MAX_CHARS)) return false;
       if (block.context !== undefined && (typeof block.context !== 'string' || block.context.length > 120)) return false;
+      if (block.lang !== undefined && (typeof block.lang !== 'string' || !/^[a-zA-Z-]{1,25}$/.test(block.lang))) return false;
+      if (block.requireTranslation !== undefined && typeof block.requireTranslation !== 'boolean') return false;
       ids.add(block.id);
       totalChars += block.text.length + (block.context?.length ?? 0);
     }

@@ -14,6 +14,16 @@
 }
 #mt-controls.mt-hidden,
 #mt-controls.mt-fullscreen-hidden { display: none !important; }
+#mt-language { position: fixed !important; right: 44px !important; width: min(310px, calc(100vw - 60px)) !important; max-height: calc(100vh - 16px) !important; overflow: auto !important; padding: 16px !important; box-sizing: border-box !important; background: #fff !important; color: #202738 !important; border: 1px solid #d5deed !important; border-radius: 12px !important; box-shadow: 0 4px 24px #0003 !important; font: 14px/1.5 system-ui, sans-serif !important; text-align: left !important; }
+#mt-language[hidden], #mt-language [hidden] { display: none !important; }
+#mt-language label { display: block !important; margin: 12px 0 4px !important; font: inherit !important; }
+#mt-language select { display: block !important; width: 100% !important; box-sizing: border-box !important; padding: 7px !important; color: #202738 !important; background: #fff !important; border: 1px solid #aeb9cc !important; border-radius: 6px !important; font: inherit !important; }
+#mt-language p { font: inherit !important; margin: 12px 0 !important; }
+#mt-language .mt-language-summary { color: #3156d5 !important; }
+#mt-language .mt-language-actions { display: flex !important; gap: 8px !important; }
+#mt-language button { display: block !important; font: inherit !important; padding: 7px 14px !important; border: 0 !important; border-radius: 6px !important; background: #3156d5 !important; color: #fff !important; cursor: pointer !important; }
+#mt-language button + button { background: #e9edf7 !important; color: #2744a3 !important; }
+#mt-language button:disabled { opacity: .55 !important; cursor: wait !important; }
 #mt-controls .mt-ball {
   box-sizing: border-box !important;
   display: block !important;

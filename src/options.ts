@@ -1,7 +1,10 @@
 import { loadSettings, models, saveSettings, testProvider } from './options-service';
 import { TranslationError } from './translation';
+import { createLanguageFields } from './language-form';
 
 const form = document.getElementById('settings') as HTMLFormElement;
+const language = createLanguageFields(document.getElementById('language-settings')!, 'language');
+let settingsRevision = 0;
 const keyInput = document.getElementById('api-key') as HTMLInputElement;
 const rememberInput = document.getElementById('remember') as HTMLInputElement;
 const originInput = document.getElementById('ollama-origin') as HTMLInputElement;
@@ -33,7 +36,7 @@ function fields() {
   const budget = (provider: 'deepseek' | 'ollama') => ({ enabled: budgetFields[provider].enabled.checked, limit: Number(budgetFields[provider].limit.value) });
   return { provider: selectedProvider(), apiKey: keyInput.value, remember: rememberInput.checked,
     ollamaOrigin: originInput.value, ollamaModel: modelInput.value,
-    budgetSettings: { deepseek: budget('deepseek'), ollama: budget('ollama') } };
+    budgetSettings: { deepseek: budget('deepseek'), ollama: budget('ollama') }, language: language.read(), expectedRevision: settingsRevision };
 }
 function updateProvider(): void {
   const local = selectedProvider() === 'ollama';
@@ -45,6 +48,8 @@ for (const radio of form.querySelectorAll<HTMLInputElement>('input[name="provide
 
 saveButton.disabled = true;
 void loadSettings().then(result => {
+  language.write(result.language);
+  settingsRevision = result.revision;
   keyInput.value = result.apiKey;
   rememberInput.checked = result.remember;
   originInput.value = result.ollamaOrigin;
@@ -63,8 +68,8 @@ void loadSettings().then(result => {
 form.addEventListener('submit', event => {
   event.preventDefault();
   saveButton.disabled = true;
-  void saveSettings(fields())
-    .then(() => setStatus('已保存。打开或刷新普通网页，在右侧中间点击“译”，也可点击工具栏插件图标。'))
+  void Promise.resolve().then(() => saveSettings(fields()))
+    .then(revision => { settingsRevision = revision; setStatus('已保存。语言规则变化后，请在网页重新开启翻译。'); })
     .catch(error => setStatus(errorMessage(error, '保存失败，请稍后重试')))
     .finally(() => { saveButton.disabled = false; });
 });
@@ -90,7 +95,7 @@ testButton.addEventListener('click', () => {
   testButton.disabled = true;
   const provider = selectedProvider();
   setStatus(provider === 'ollama' ? '正在调用本机 Ollama 测试翻译…' : '正在调用 DeepSeek 测试连接…');
-  void testProvider(fields())
+  void Promise.resolve().then(() => testProvider(fields()))
     .then(result => setStatus(`连接成功。样例标题译为“${result.preview}”；本次 ${result.usage?.totalTokens ?? '用量未知'} token。`))
     .catch(error => setStatus(errorMessage(error, '连接失败，请检查服务与设置')))
     .finally(() => { testButton.disabled = false; });

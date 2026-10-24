@@ -161,6 +161,7 @@ if (!session) {
 console.log(`browser: ${session.browserPath}${refused.length ? ` (skipped ${refused.length} build(s) that reject --load-extension)` : ''}`);
 
 const modelRequests = [];
+let modelDelay = 0;
 const server = createServer(async (request, response) => {
   const name = new URL(request.url ?? '/', 'http://127.0.0.1').pathname.replace(/^\//, '');
   if (name === 'api/chat') {
@@ -170,7 +171,9 @@ const server = createServer(async (request, response) => {
       let body=''; for await (const part of request) body+=part;
       const input=JSON.parse(body); const batch=JSON.parse(input.messages.find(message=>message.role==='user').content);
       modelRequests.push(batch);
-      response.writeHead(200,{'content-type':'application/json'}).end(JSON.stringify({done:true,done_reason:'stop',prompt_eval_count:8,eval_count:2,message:{content:JSON.stringify({translations:batch.groups.flatMap(group=>group.blocks.map(block=>({id:block.id,text:'测试译文，仅用于检查提取和显示：'+block.text})))})}}));
+      const phrases = { 'zh-CN':'图书馆每天早晨开放，最后一位读者离开后关闭。', 'zh-TW':'圖書館每天早晨開放，最後一位讀者離開後關閉。', en:'The library opens every morning.',ja:'図書館は毎朝開館します。',ko:'도서관은 매일 아침 문을 엽니다.',fr:'La bibliothèque ouvre chaque matin.',de:'Die Bibliothek öffnet jeden Morgen.',es:'La biblioteca abre cada mañana.',pt:'A biblioteca abre todas as manhãs.',ru:'Библиотека открывается каждое утро.' };
+      if (batch.pageTitle === 'Language integration' && modelDelay) await new Promise(resolve=>setTimeout(resolve,modelDelay));
+      response.writeHead(200,{'content-type':'application/json'}).end(JSON.stringify({done:true,done_reason:'stop',prompt_eval_count:8,eval_count:2,message:{content:JSON.stringify({translations:batch.groups.flatMap(group=>group.blocks.map(block=>({id:block.id,text:batch.pageTitle === 'Language integration' ? block.text.split(/(__MT_KEEP_\d+__)/g).map(part=>/^__MT_KEEP_\d+__$/.test(part)?part:part.trim()?phrases[batch.targetLang]:part).join('') : '测试译文，仅用于检查提取和显示：'+block.text})))})}}));
     } catch { response.writeHead(400).end(); }
     return;
   }
@@ -252,6 +255,102 @@ try {
   }
   assert.equal(await pageClient.evaluate(`document.querySelector('#ollama-budget-limit').disabled`,false),true);
   console.log('PASS options: real budget save, disabled value retained and reload');
+
+  const installedLanguage = await session.client.evaluate(`chrome.storage.local.get('language')`);
+  assert.deepEqual(installedLanguage.language, {scope:'all',source:null,target:'zh-CN'}, 'a new installation defaults to all → Simplified Chinese');
+  async function waitUI(expression, label) {
+    for(let i=0;i<100;i++){if(await pageClient.evaluate(expression))return;await new Promise(resolve=>setTimeout(resolve,100));}
+    throw new Error(`language check timed out: ${label}: `+await pageClient.evaluate(`document.querySelector('.mt-panel')?.textContent`));
+  }
+  for(const target of ['zh-TW','en','ja','ko','fr','de','es','pt','ru','zh-CN']) {
+    await pageClient.evaluate(`document.querySelector('#language-target').value=${JSON.stringify(target)}; document.querySelector('#language-target').dispatchEvent(new Event('change')); document.querySelector('#settings').requestSubmit()`);
+    await waitUI(`document.querySelector('#settings button[type=submit]').disabled === false`, 'save '+target);
+    assert.equal((await session.client.evaluate(`chrome.storage.local.get('language')`)).language.target,target);
+  }
+  console.log('PASS languages: new-install default and all 10 target settings persist');
+  await mkdir(join(root,'docs','acceptance-v0.6.0'),{recursive:true});
+  if (process.env.MT_SCREENSHOTS) {
+    const optionsShot = await pageClient.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:true});
+    await writeFile(join(root,'docs','acceptance-v0.6.0','options.png'),Buffer.from(optionsShot.data,'base64'));
+  }
+  await session.client.evaluate(`(async()=>{const raw=await chrome.storage.local.get(['settingsVersion','settingsRevision']);await chrome.storage.local.set({provider:'ollama',ollamaOrigin:${JSON.stringify(base)},ollamaModel:'validation-fixture',language:{scope:'specific',source:'en',target:'zh-CN'},settingsVersion:(raw.settingsVersion||0)+1,settingsRevision:(raw.settingsRevision||0)+1,budgetSettings:{deepseek:{enabled:true,limit:40000},ollama:{enabled:false,limit:50000}}});})()`);
+  await pageClient.send('Page.navigate',{url:`${base}/languages.html`});
+  await waitUI(`!!document.querySelector('.mt-ball')`, 'content injection');
+  const requestStart=modelRequests.length;
+  await pageClient.evaluate(`document.querySelector('.mt-ball').click()`);
+  await waitUI(`document.querySelectorAll('.mt-translation').length >= 2 && document.querySelector('.mt-panel').textContent.includes('跳过')`, 'specific translation');
+  const sourceBlocks=modelRequests.slice(requestStart).flatMap(batch=>batch.groups.flatMap(group=>group.blocks));
+  assert.ok(sourceBlocks.some(block=>block.text.includes('library opens')));
+  assert.equal(sourceBlocks.some(block=>block.text.includes('bibliothèque')||block.text.includes('図書館')),false,'specific mode excludes other-language blocks');
+  assert.ok(sourceBlocks.some(block=>block.text.includes('__MT_KEEP_')),'mixed-language blocks protect the existing Chinese');
+  assert.equal(await pageClient.evaluate(`document.querySelectorAll('.mt-translation').length`),2,'only the English paragraph and safe mixed paragraph get translations');
+  const repeatedStart=modelRequests.length;
+  await pageClient.evaluate(`document.querySelector('.mt-ball').click();document.querySelector('.mt-ball').click()`);
+  await waitUI(`document.querySelectorAll('.mt-translation').length===2`,'cached restoration');
+  assert.equal(modelRequests.length,repeatedStart,'translated and skipped blocks both reuse the current-rule cache');
+  console.log('PASS languages: real CLD filtering, mixed-span protection, skip states and cache restoration');
+  async function applyRule(rule) {
+    await pageClient.evaluate(`document.querySelector('.mt-ball').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}));Array.from(document.querySelectorAll('.mt-context-menu button')).find(button=>button.textContent==='切换翻译语言').click()`);
+    await waitUI(`!document.querySelector('#mt-language').hidden && document.querySelector('#mt-language button[type=submit]').disabled===false`,'language panel ready');
+    if (process.env.MT_SCREENSHOTS) {
+      const screenshot=await pageClient.send('Page.captureScreenshot',{format:'png'});
+      await writeFile(join(root,'docs','acceptance-v0.6.0','language-panel.png'),Buffer.from(screenshot.data,'base64'));
+    }
+    await pageClient.evaluate(`document.querySelector('#mt-language-scope').value=${JSON.stringify(rule.scope)};document.querySelector('#mt-language-scope').dispatchEvent(new Event('change'));document.querySelector('#mt-language-source').value=${JSON.stringify(rule.source||'en')};document.querySelector('#mt-language-target').value=${JSON.stringify(rule.target)};document.querySelector('#mt-language form').requestSubmit()`);
+    await waitUI(`document.querySelector('#mt-language').hidden`,'apply language');
+  }
+  await applyRule({scope:'specific',source:'ja',target:'en'});
+  await waitUI(`document.querySelectorAll('.mt-translation').length===1`,'Japanese to English');
+  assert.equal(await pageClient.evaluate(`document.querySelector('.mt-translation').textContent`),'The library opens every morning.');
+  assert.equal(await pageClient.evaluate(`document.querySelector('.mt-translation').lang`),'en','rendered language follows the selected target');
+  await applyRule({scope:'specific',source:'en',target:'zh-CN'});
+  await waitUI(`document.querySelectorAll('.mt-translation').length===2`,'switch back to cached English');
+  assert.equal(modelRequests.length,repeatedStart+1,'switching back reuses the earlier language cache');
+  await applyRule({scope:'all',source:null,target:'ja'});
+  await waitUI(`document.querySelectorAll('.mt-translation').length>=3`,'all to Japanese');
+  assert.ok(await pageClient.evaluate(`Array.from(document.querySelectorAll('.mt-translation')).every(node=>node.lang==='ja')`),'all rendered translations carry the Japanese language tag');
+  assert.ok(await pageClient.evaluate(`Array.from(document.querySelectorAll('.mt-translation')).every(node=>!node.textContent.includes('__MT_KEEP_'))`));
+  const allUsage=await session.client.evaluate(`chrome.storage.session.get(null)`);
+  const budgets=Object.entries(allUsage).filter(([key])=>key.endsWith(':ollama')).map(([,value])=>value);
+  assert.ok(budgets.some(budget=>budget.used>10),'switching languages preserves accumulated use');
+  console.log('PASS languages: quick menu, two modes, separate caches, switch-back reuse and budget accumulation');
+
+  // A settings change in another tab stops the active document without issuing new calls.
+  const beforeExternal=modelRequests.length;
+  await session.client.evaluate(`(async()=>{const raw=await chrome.storage.local.get(['settingsVersion','settingsRevision']);await chrome.storage.local.set({language:{scope:'specific',source:'en',target:'fr'},settingsVersion:raw.settingsVersion+1,settingsRevision:raw.settingsRevision+1});})()`);
+  await waitUI(`document.querySelectorAll('.mt-translation').length===0 && !document.querySelector('.mt-ball').classList.contains('mt-active')`,'external change stops old page');
+  await new Promise(resolve=>setTimeout(resolve,250));
+  assert.equal(modelRequests.length,beforeExternal,'other tabs wait for manual restart');
+  // A response already sent by the model cannot be inserted after another rule takes effect.
+  modelDelay=700;
+  await pageClient.evaluate(`document.querySelector('.mt-ball').click()`);
+  for(let i=0;i<60&&modelRequests.length===beforeExternal;i++)await new Promise(resolve=>setTimeout(resolve,50));
+  assert.ok(modelRequests.length>beforeExternal,'a delayed request really started');
+  await session.client.evaluate(`(async()=>{const raw=await chrome.storage.local.get('settingsVersion');await chrome.storage.local.set({language:{scope:'specific',source:'en',target:'de'},settingsVersion:raw.settingsVersion+1});})()`);
+  await waitUI(`!document.querySelector('.mt-ball').classList.contains('mt-active')`,'cancel delayed request');
+  await new Promise(resolve=>setTimeout(resolve,900));
+  assert.equal(await pageClient.evaluate(`document.querySelectorAll('.mt-translation').length`),0,'late result is never inserted');
+  modelDelay=0;
+  console.log('PASS languages: cross-tab updates stop requests and reject late results');
+  const activeTab=(await session.client.evaluate(`chrome.tabs.query({})`)).find(tab=>tab.url===`${base}/languages.html`)?.id;
+  assert.ok(activeTab,'find the test document rather than an options tab opened by the no-key check');
+  async function selectText(id) {
+    const text=await pageClient.evaluate(`(()=>{const node=document.getElementById(${JSON.stringify(id)});const range=document.createRange();range.selectNodeContents(node);const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);return selection.toString();})()`);
+    await session.client.evaluate(`chrome.tabs.sendMessage(${activeTab},{type:'MT_SELECTION',text:${JSON.stringify(text)},editable:false,frameOk:true},{frameId:0})`);
+  }
+  const beforeSkippedSelection=modelRequests.length;
+  await selectText('ja');
+  await waitUI(`document.querySelector('#mt-selection').dataset.state==='blocked' && document.querySelector('.mt-sel-result').textContent.includes('不属于指定语言')`,'selection skips other language');
+  assert.equal(modelRequests.length,beforeSkippedSelection);
+  await selectText('en');
+  await waitUI(`document.querySelector('#mt-selection').dataset.state==='success'`,'selection target language');
+  assert.equal(await pageClient.evaluate(`document.querySelector('.mt-sel-result').textContent`),'Die Bibliothek öffnet jeden Morgen.');
+  await selectText('en');
+  await waitUI(`document.querySelector('#mt-selection').dataset.state==='success'`,'selection cache');
+  assert.equal(modelRequests.length,beforeSkippedSelection+1);
+  console.log('PASS languages: selection shares current rules, skips other languages and reuses its language-specific cache');
+  await mkdir(join(root,'docs','acceptance-v0.6.0'),{recursive:true});
+  await writeFile(join(root,'docs','acceptance-v0.6.0','install-languages.json'),JSON.stringify({browser:session.browserPath,version:info.version,passed:true,requests:modelRequests},null,2));
 
   if (process.env.MT_LIVE) {
     await session.client.evaluate(`chrome.storage.local.set({provider:'ollama',ollamaOrigin:${JSON.stringify(base)},ollamaModel:'validation-fixture',settingsVersion:1,budgetSettings:{deepseek:{enabled:true,limit:30000},ollama:{enabled:false,limit:30000}}})`);

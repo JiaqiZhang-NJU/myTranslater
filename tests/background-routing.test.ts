@@ -25,7 +25,7 @@ test('background keeps provider selection and key separate, and rejects stale se
   let handler: ((message: unknown, sender: chrome.runtime.MessageSender, respond: (response: any) => void) => boolean) | undefined;
   let actionHandler: ((tab: chrome.tabs.Tab) => void) | undefined;
   let contextMenuHandler: ((info: chrome.contextMenus.OnClickData, tab?: chrome.tabs.Tab) => void) | undefined;
-  let installedHandler: (() => void) | undefined;
+  let installedHandler: ((details: chrome.runtime.InstalledDetails) => void) | undefined;
   const createdMenus: { id?: string; title?: string; contexts?: string[] }[] = [];
   const badge = new Map<number, string>();
   let openOptionsCount = 0;
@@ -35,6 +35,7 @@ test('background keeps provider selection and key separate, and rejects stale se
     storage: { local: area(local, 'local'), session: area(session, 'session'), onChanged: { addListener: (fn: typeof storageListeners[number]) => { storageListeners.push(fn); } } },
     runtime: {
       id: 'test-extension', getURL: (path: string) => `chrome-extension://test-extension/${path}`,
+      sendMessage: (message: unknown) => new Promise(resolve => handler!(message, { id: 'test-extension', url: 'chrome-extension://test-extension/options.html' }, resolve)),
       onMessage: { addListener: (fn: typeof handler) => { handler = fn; } },
       onInstalled: { addListener: (fn: typeof installedHandler) => { installedHandler = fn; } },
       openOptionsPage: async () => { openOptionsCount++; }
@@ -49,7 +50,7 @@ test('background keeps provider selection and key separate, and rejects stale se
       create: (item: { id?: string; title?: string; contexts?: string[] }) => { createdMenus.push(item); },
       onClicked: { addListener: (fn: typeof contextMenuHandler) => { contextMenuHandler = fn; } }
     },
-    tabs: { sendMessage: async (tabId: number, message: unknown) => {
+    tabs: { query: async () => [], sendMessage: async (tabId: number, message: unknown) => {
       if (!contentScriptAvailable) throw new Error('No receiving content script');
       sentToTab = { tabId, message };
       return { ok: true };
@@ -63,7 +64,7 @@ test('background keeps provider selection and key separate, and rejects stale se
     assert.ok(handler);
     assert.ok(actionHandler);
     assert.deepEqual(createdMenus, [{ id: 'mt-translation-selection', title: '用 myTranslater 翻译所选文字', contexts: ['selection'] }]);
-    installedHandler?.();
+    installedHandler?.({ reason: 'update' } as chrome.runtime.InstalledDetails);
     assert.equal(createdMenus.length, 1);
     assert.ok(contextMenuHandler);
     actionHandler({ id: 7 } as chrome.tabs.Tab);

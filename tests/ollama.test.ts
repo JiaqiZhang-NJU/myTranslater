@@ -4,12 +4,32 @@ import { listOllamaModels, normalizeOllamaOrigin, parseOllamaResponse, validateO
 import { providerIdentity, translateConfigured, validateSettingsInput } from '../src/settings.ts';
 import type { TranslationBatch } from '../src/shared.ts';
 import { TranslationError } from '../src/translation.ts';
+import { TARGET_LANGUAGES, languageFields, targetName } from '../src/languages.ts';
 
 const batch: TranslationBatch = { pageTitle: 'Atlas Documentation', targetLang: 'zh-CN', groups: [{ id: 'g1', blocks: [
   { id: 'b1', role: 'heading', text: 'About' },
   { id: 'b2', role: 'paragraph', text: 'Atlas automates developer tasks.' }
 ] }] };
 const translations = [{ id: 'b1', text: '项目简介' }, { id: 'b2', text: 'Atlas 可自动执行开发任务。' }];
+test('Ollama uses every requested target and its unchanged schema is explicit', async () => {
+  const original = globalThis.fetch;
+  try {
+    for (const [target] of TARGET_LANGUAGES) {
+      globalThis.fetch = async (_url, init) => {
+        const body = JSON.parse(String(init?.body));
+        assert.ok(body.messages[0].content.includes(`into ${targetName(target)}`));
+        assert.equal(JSON.parse(body.messages[1].content).targetLang, target);
+        const alternatives = body.format.properties.translations.items.anyOf;
+        assert.deepEqual(alternatives[0].properties.status.enum, ['translated']);
+        assert.deepEqual(alternatives[1].properties.status.enum, ['unchanged']);
+        assert.deepEqual(alternatives[1].properties.id.enum, ['b']);
+        assert.deepEqual(alternatives[1].properties.text.enum, ['Library'], 'unchanged is constrained to exact source text');
+        return new Response(JSON.stringify({ done: true, message: { content: JSON.stringify({ translations: [{ id: 'b', text: '示例译文' }] }) } }));
+      };
+      await translateConfigured({ provider: 'ollama', ollamaOrigin: 'http://127.0.0.1:11434', ollamaModel: 'qwen3.5:4b', version: 0 }, '', { pageTitle: 'Test', ...languageFields({ scope: 'all', source: null, target }), groups: [{ id: 'g', blocks: [{ id: 'b', role: 'heading', text: 'Library' }] }] }, new AbortController().signal);
+    }
+  } finally { globalThis.fetch = original; }
+});
 
 test('Ollama address is limited to local origins and model rejects cloud labels', () => {
   assert.equal(normalizeOllamaOrigin('http://localhost:11434'), 'http://localhost:11434');
@@ -46,7 +66,7 @@ test('provider selection calls Ollama without API key and keeps contextual JSON 
     const result = await translateConfigured(settings, '', batch, new AbortController().signal);
     assert.equal(request?.model, 'qwen3:8b');
     assert.equal(request?.stream, false);
-    assert.deepEqual(((request?.format as { properties: { translations: { items: { properties: { id: { enum: string[] } } } } } }).properties.translations.items.properties.id.enum), ['b1', 'b2']);
+    assert.deepEqual(((request?.format as { properties: { translations: { items: { anyOf: { properties: { id: { enum: string[] } } }[] } } } }).properties.translations.items.anyOf[0].properties.id.enum), ['b1', 'b2']);
     assert.equal(request?.think, false);
     assert.equal(JSON.parse((request?.messages as { content: string }[])[1].content).groups[0].blocks[0].text, 'About');
     assert.equal(result.usage?.totalTokens, 61);

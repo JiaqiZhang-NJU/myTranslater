@@ -11,7 +11,7 @@ export interface Controls {
   setHidden(hidden: boolean): void;
 }
 
-export function createControls(onToggle: () => void, onRetry: () => void, onSettings: () => void, onPause: () => void, onHide: () => void, onRetranslate: () => void = () => {}): Controls {
+export function createControls(onToggle: () => void, onRetry: () => void, onSettings: () => void, onPause: () => void, onHide: () => void, onRetranslate: () => void = () => {}, onLanguage: () => void = onSettings): Controls {
   const root = document.createElement('div');
   root.id = 'mt-controls';
   const ball = document.createElement('button');
@@ -55,6 +55,8 @@ export function createControls(onToggle: () => void, onRetry: () => void, onSett
   hide.textContent = '在当前页面隐藏悬浮球';
   hide.addEventListener('click', () => { closeMenu(); onHide(); });
   menu.append(hide);
+  const language = document.createElement('button'); language.type = 'button'; language.setAttribute('role', 'menuitem'); language.textContent = '切换翻译语言';
+  language.addEventListener('click', () => { closeMenu(); onLanguage(); }); menu.append(language);
   const reset = document.createElement('button');
   reset.type = 'button'; reset.setAttribute('role', 'menuitem'); reset.textContent = '重置按钮位置';
   reset.addEventListener('click', () => { closeMenu(); ratio = 0.5; place(); savePosition(); });

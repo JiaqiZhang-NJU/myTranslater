@@ -1,8 +1,11 @@
 import { parseProviderSettings, providerIdentity, translateConfigured } from './settings';
-import { isTranslationBatch, pageUrlIdentity, type ContentMessage, type TranslationBatch } from './shared';
+import { isTranslationBatch, pageUrlIdentity, type ContentMessage, type SettingsMessage, type TranslationBatch } from './shared';
 import { TranslationError } from './translation';
 import { currentBudget, parseBudgetSettings, snapshot, type TabBudget } from './budget';
 import { dockPosition } from './dock-settings';
+import { batchLanguage, languageIdentity, parseLanguageSettings } from './languages';
+import { initializeLanguage, persistLanguage, persistSettings, settingsSettled } from './options-service';
+import { prepareTranslation } from './language-policy';
 
 const MAX_ACTIVE = 2;
 const controllers = new Map<string, Set<AbortController>>();
@@ -23,7 +26,9 @@ async function apiKey(): Promise<string> {
 }
 
 async function providerSettings() {
-  return parseProviderSettings(await chrome.storage.local.get(['provider', 'ollamaOrigin', 'ollamaModel', 'settingsVersion']));
+  await settingsSettled();
+  const raw = await chrome.storage.local.get(['provider', 'ollamaOrigin', 'ollamaModel', 'settingsVersion', 'language']);
+  return { ...parseProviderSettings(raw), language: parseLanguageSettings(raw.language) };
 }
 
 async function acquire(signal: AbortSignal): Promise<void> {
@@ -133,20 +138,10 @@ async function translateFromTab(tabId: number, documentId: string, sessionId: st
     await storageReady;
     if (cancelled.delete(identity)) throw new TranslationError('已取消', 'cancelled');
     const settings = await providerSettings();
-    if (settings.version !== settingsVersion) throw new TranslationError('翻译方式已更新，请重新开启本页翻译', 'config');
+    if (settings.version !== settingsVersion || languageIdentity(batchLanguage(batch)) !== languageIdentity(settings.language)) throw new TranslationError('翻译设置已更新，请重新开启本页翻译', 'config');
     const key = settings.provider === 'deepseek' ? await apiKey() : '';
     if (settings.provider === 'deepseek' && !key) throw new TranslationError('请先在设置中填写 DeepSeek API Key', 'key');
     if (settings.provider === 'ollama' && !settings.ollamaModel) throw new TranslationError('请先选择 Ollama 本机模型', 'config');
-    // A short selection needs far less completion room than a full page batch.
-    const reserve = batch.mode === 'selection' ? 512 : 2048;
-    const cost = Math.ceil(JSON.stringify(batch).length / 2) + reserve;
-    await budget(tabId, documentId, settings.provider, cost);
-    const latestVersion = (await providerSettings()).version;
-    const cancelledBeforeStart = cancelled.delete(identity);
-    if (cancelledBeforeStart || latestVersion !== settingsVersion) {
-      await settleBudget(tabId, documentId, settings.provider, cost, 0);
-      throw new TranslationError(cancelledBeforeStart ? '已取消' : '翻译方式已更新，请重新开启本页翻译', cancelledBeforeStart ? 'cancelled' : 'config');
-    }
     const controller = new AbortController();
     const set = controllers.get(identity) ?? new Set<AbortController>();
     set.add(controller);
@@ -154,12 +149,25 @@ async function translateFromTab(tabId: number, documentId: string, sessionId: st
     let acquired = false;
     let requestStarted = false;
     let actualCost = 0;
+    let cost = 0;
+    let reserved = false;
     let result: Awaited<ReturnType<typeof translateConfigured>>;
     try {
+      // Old in-process batches are accepted only with the exact legacy rule.
+      const prepared = batch.translationScope === undefined ? { batch, finish: (result: Awaited<ReturnType<typeof translateConfigured>>) => result }
+        : await prepareTranslation(batch, undefined, controller.signal);
+      if (controller.signal.aborted || cancelled.delete(identity)) throw new TranslationError('已取消', 'cancelled');
+      if ((await providerSettings()).version !== settingsVersion) throw new TranslationError('翻译设置已更新，请重新开启本页翻译', 'config');
+      if (!prepared.batch) return { ok: true as const, ...prepared.finish({ translations: [], usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } }), budget: await responseBudget(tabId, documentId, settings.provider) };
+      if (!isTranslationBatch(prepared.batch)) throw new TranslationError('语言处理后的请求超过长度限制，请缩小选区', 'response');
+      cost = Math.ceil(JSON.stringify(prepared.batch).length / 2) + (batch.mode === 'selection' ? 512 : 2048);
+      await budget(tabId, documentId, settings.provider, cost);
+      reserved = true;
       await acquire(controller.signal);
       acquired = true;
+      if (controller.signal.aborted || (await providerSettings()).version !== settingsVersion) throw new TranslationError('翻译设置已更新，请重新开启本页翻译', 'cancelled');
       requestStarted = true;
-      result = await translateConfigured(settings, key, batch, controller.signal);
+      result = prepared.finish(await translateConfigured(settings, key, prepared.batch, controller.signal));
       if (controller.signal.aborted) throw new TranslationError('已取消', 'cancelled');
       if ((await providerSettings()).version !== settingsVersion) throw new TranslationError('翻译方式已更新，请重新开启本页翻译', 'config');
       actualCost = result.usage?.totalTokens ?? cost;
@@ -173,7 +181,7 @@ async function translateFromTab(tabId: number, documentId: string, sessionId: st
       set.delete(controller);
       if (!set.size) controllers.delete(identity);
       cancelled.delete(identity);
-      await settleBudget(tabId, documentId, settings.provider, cost, actualCost);
+      if (reserved) await settleBudget(tabId, documentId, settings.provider, cost, actualCost);
     }
     return { ok: true as const, ...result!, budget: await responseBudget(tabId, documentId, settings.provider) };
   });
@@ -181,12 +189,21 @@ async function translateFromTab(tabId: number, documentId: string, sessionId: st
 
 async function handle(message: unknown, sender: chrome.runtime.MessageSender) {
   if (!message || typeof message !== 'object' || typeof (message as { type?: unknown }).type !== 'string') return { ok: false, error: '消息无效' };
-  const data = message as ContentMessage;
+  const data = message as ContentMessage | SettingsMessage;
+  if (data.type === 'SAVE_SETTINGS' && sender.id === chrome.runtime.id && sender.url === chrome.runtime.getURL('options.html')) {
+    if (!data.input || typeof data.input !== 'object') return { ok: false, error: '设置无效' };
+    return { ok: true, ...await persistSettings(data.input) };
+  }
   const fromTab = sender.id === chrome.runtime.id && sender.tab?.id !== undefined && /^https?:\/\//.test(sender.url ?? '');
   if (fromTab) {
     const tabId = sender.tab!.id!;
     const pageUrl = pageUrlIdentity(sender.url!);
     const documentId = sender.documentId ? `${sender.documentId}:${pageUrl}` : pageUrl;
+    if (data.type === 'SET_LANGUAGE') {
+      if (sender.frameId && sender.frameId !== 0) return { ok: false, error: '只支持顶层网页' };
+      await persistLanguage(data.language, data.expectedVersion);
+      return { ok: true };
+    }
     if (data.type === 'GET_DOCK_POSITION' || data.type === 'SET_DOCK_POSITION') {
       if (sender.frameId && sender.frameId !== 0) return { ok: false, error: '只支持顶层网页' };
       if (data.type === 'SET_DOCK_POSITION' && (!Number.isFinite(data.ratio) || data.ratio < 0 || data.ratio > 1)) return { ok: false, error: '按钮位置无效' };
@@ -195,7 +212,7 @@ async function handle(message: unknown, sender: chrome.runtime.MessageSender) {
     if (data.type === 'GET_PROVIDER_STATUS') {
       const settings = await providerSettings();
       const ready = settings.provider === 'ollama' ? Boolean(settings.ollamaModel) : Boolean(await apiKey());
-      return { ok: true, ready, provider: settings.provider, identity: providerIdentity(settings), settingsVersion: settings.version,
+      return { ok: true, ready, provider: settings.provider, identity: providerIdentity(settings), settingsVersion: settings.version, language: settings.language,
         budget: snapshot(await budget(tabId, documentId, settings.provider)),
         message: ready ? '' : settings.provider === 'ollama' ? '请先选择 Ollama 本机模型' : '请先填写 DeepSeek API Key' };
     }
@@ -230,6 +247,14 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== 'local' || !changes.settingsVersion || changes.settingsVersion.oldValue === changes.settingsVersion.newValue) return;
   for (const set of controllers.values()) for (const controller of set) controller.abort();
+  const version = changes.settingsVersion.newValue;
+  void (async () => {
+    const settings = await providerSettings();
+    if (settings.version !== version) return;
+    for (const tab of await chrome.tabs.query({})) if (tab.id !== undefined) {
+      void chrome.tabs.sendMessage(tab.id, { type: 'MT_SETTINGS_CHANGED', settingsVersion: settings.version, language: settings.language }, { frameId: 0 }).catch(() => {});
+    }
+  })().catch(() => {});
 });
 
 chrome.action.onClicked.addListener(tab => {
@@ -254,7 +279,7 @@ function registerSelectionMenu(): void {
 }
 
 registerSelectionMenu();
-chrome.runtime.onInstalled.addListener(registerSelectionMenu);
+chrome.runtime.onInstalled.addListener(details => { registerSelectionMenu(); void initializeLanguage(details.reason); });
 
 async function openSelection(tabId: number, info: chrome.contextMenus.OnClickData): Promise<void> {
   const text = typeof info.selectionText === 'string' ? info.selectionText : '';

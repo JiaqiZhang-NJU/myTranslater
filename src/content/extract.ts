@@ -385,7 +385,11 @@ export function extractPage(root: ScanRoot = document.body): PageGroup[] {
       const revisionSource = `${source}\0${rich.signature}`;
       const revision = previous?.source === revisionSource ? previous.number : (previous?.number ?? 0) + 1;
       revisions.set(element, { source: revisionSource, number: revision });
-      blocks.push({ id, role: roleOf(element, roles), text, ...(context ? { context: context.slice(0, 120) } : {}) });
+      let lang: string | undefined;
+      for (let cursor: Element | null = element; cursor && cursor !== document.documentElement; cursor = parentElement(cursor)) {
+        if (cursor.hasAttribute('lang')) { const value = cursor.getAttribute('lang') ?? ''; if (/^[a-zA-Z-]{1,25}$/.test(value)) lang = value; break; }
+      }
+      blocks.push({ id, role: roleOf(element, roles), text, ...(context ? { context: context.slice(0, 120) } : {}), ...(lang ? { lang } : {}) });
       nodes.set(id, element);
       carriers.set(id, carrierFor(element, source));
       textNodes.set(id, ownedNodes);
@@ -398,7 +402,7 @@ export function extractPage(root: ScanRoot = document.body): PageGroup[] {
     const group: TextGroup = { id: `g${identity(container)}${suffix}`, ...(section ? { section: section.slice(0, 180) } : {}), blocks };
     groups.push({
       group, nodes, carriers, textNodes, sources, revisions: versions, inline,
-      fingerprint: JSON.stringify([document.title.slice(0, 180), group, signatures]),
+      fingerprint: JSON.stringify([document.title.slice(0, 180), document.documentElement.lang, group, signatures]),
       top: entries[0].element.getBoundingClientRect().top
     });
   }

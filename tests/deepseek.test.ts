@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { translateDeepSeek } from '../src/deepseek.ts';
 import type { TranslationBatch } from '../src/shared.ts';
+import { TARGET_LANGUAGES, languageFields, targetName } from '../src/languages.ts';
 
 test('DeepSeek request sends contextual groups with JSON mode and thinking disabled', async () => {
   const batch: TranslationBatch = {
@@ -37,4 +38,19 @@ test('DeepSeek request sends contextual groups with JSON mode and thinking disab
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+test('DeepSeek uses the requested target in every language prompt and preserves scope', async () => {
+  const original = globalThis.fetch;
+  try {
+    for (const [target] of TARGET_LANGUAGES) {
+      globalThis.fetch = async (_url, init) => {
+        const body = JSON.parse(String(init?.body));
+        assert.ok(body.messages[0].content.includes(`into ${targetName(target)}`));
+        assert.equal(JSON.parse(body.messages[1].content).targetLang, target);
+        assert.equal(JSON.parse(body.messages[1].content).translationScope, 'all');
+        return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ translations: [{ id: 'b', text: '示例译文' }] }) } }] }));
+      };
+      await translateDeepSeek('test-key', { pageTitle: 'Test', ...languageFields({ scope: 'all', source: null, target }), groups: [{ id: 'g', blocks: [{ id: 'b', role: 'heading', text: 'Library' }] }] }, new AbortController().signal);
+    }
+  } finally { globalThis.fetch = original; }
 });
